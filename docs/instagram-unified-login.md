@@ -94,3 +94,7 @@ After reviewing and deploying the code through your normal **manual** process:
 - [Facebook Login for Business](https://developers.facebook.com/documentation/facebook-login/facebook-login-for-business)
 - [Media Insights](https://developers.facebook.com/documentation/instagram-platform/reference/instagram-media/insights)
 - [Migration and new-app availability](https://developers.facebook.com/documentation/instagram-platform/instagram-api-with-instagram-login/migration-guide)
+
+## Instagram consent navigation on Netlify/Chrome
+
+Instagram consent POSTs finish with an HTTP 200 HTML handoff document before opening the server-generated Meta authorization URL through a meta refresh (with a normal link fallback). This deliberately separates the same-origin form submission from Meta's GET redirect chain: Chrome checks downstream redirects of a form's 303 response against `form-action` and can report the original form URL when a later redirect is blocked. No provider wildcard or extra CSP host is added. The trusted HTTPS destination is checked server-side, URL attributes are escaped, and the original OAuth state cookie and no-store headers are preserved. Same-origin Origin validation, explicit consent, invitation validation and the atomic browser-bound OAuth flow are unchanged. YouTube, Facebook and TikTok navigation are unchanged. No script, extra endpoint, database change or Meta callback change is required.

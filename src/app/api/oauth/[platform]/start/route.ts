@@ -1,4 +1,5 @@
 import { startOAuth, oauthInvitation, oauthMessage } from '@/services/oauth/flow';
+import { instagramBrowserHandoff } from '@/services/oauth/browser-handoff';
 import { requireSameOrigin } from '@/lib/server/supabase';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -24,7 +25,9 @@ export async function POST(
     const url = new URL(request.url);
     url.search = '';
     url.searchParams.set('ticket', String(form.get('ticket')));
-    return await startOAuth(new Request(url), (await params).platform);
+    const platform = (await params).platform;
+    const response = await startOAuth(new Request(url), platform);
+    return platform === 'instagram' ? instagramBrowserHandoff(response) : response;
   } catch {
     return oauthMessage(
       'Connection could not start. Accept the privacy policy using a valid invitation and try again.',
