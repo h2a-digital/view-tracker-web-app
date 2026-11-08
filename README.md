@@ -2,6 +2,10 @@
 
 Private UGC operations dashboard for multiple apps. Next.js App Router, React, TypeScript, Supabase PostgreSQL/Auth, and a replaceable Zernio TikTok adapter. No public signup, subscriptions, or payment processing.
 
+## Deploy the existing project
+
+Follow [the Vercel + Supabase Cron deployment guide](docs/production-deployment.md). It lists all production environment variables, the new **202611080002_production_operations.sql** incremental migration, Vault/Cron setup, HTTPS OAuth configuration, monitoring and cost constraints. Do not reset the existing database or rerun earlier migrations. Production deployment and live SQL changes remain manual.
+
 ## Run locally
 
 Node 22.15+ is required (see `.nvmrc`).
@@ -33,20 +37,14 @@ Tests cover payout arithmetic, rule versioning, publication-month boundaries, el
 
 ## Upgrade an existing live project
 
-See [the detailed tracking upgrade notes](docs/tracking-upgrade.md) for collection states, diagnostics, and evidence requirements.
+The live pilot has already applied `202611080001_tracking_and_new_york.sql`. Follow the [production deployment guide](docs/production-deployment.md): stop old workers, apply **only `202611080002_production_operations.sql` once**, deploy the current app, and configure Supabase Cron. The current app requires schema version 3. No migration resets or disconnects accounts, deletes snapshots, or rewrites finalized payouts. Do not rerun earlier migrations or run test fixtures against Supabase.
 
-**Do not rerun or edit `202611070001_ugc.sql`.** The existing TikTok connection, posts, and snapshot history must remain in place.
-
-1. Stop the scheduled worker and the old application process while migrating. Keep your usual database backup available.
-2. In Supabase SQL Editor, as `postgres`, run **only** `supabase/migrations/202611080001_tracking_and_new_york.sql`, in full, once. Do not run test fixtures against Supabase.
-3. This transaction adds tracking/evidence/diagnostic columns, changes monthly protection to New York, and invalidates draft bonus approvals. It does not delete records, reset OAuth links, rewrite finalized amounts, or start Cron jobs. It **aborts and rolls back** if converting months would move an existing statement or merge conflicting policies. If it aborts, preserve the database and review the affected payout transition rather than deleting/recreating records.
-4. Deploy/restart this updated application and resume the existing five-minute worker schedule. The app checks schema version 2 before loading live data; it will request this incremental migration when the old schema is detected. Do not run an old app process against the upgraded database.
-5. Invoke one worker run and inspect its `diagnostics` response and Needs attention. Historical imports will remain reviewable; no seven-day history is manufactured. Existing accepted posts without structured evidence must be re-reviewed before a draft can finalize.
+For a database that has not yet applied the tracking/New York upgrade, first follow [the tracking upgrade notes](docs/tracking-upgrade.md), then apply the operations migration. That earlier migration can abort if timezone conversion would affect existing statements; preserve the database and review the payout transition rather than deleting/recreating records. Historical imports do not manufacture seven-day history, and existing accepted posts without structured evidence require review before finalization.
 
 ## Dedicated Supabase setup
 
 1. Create a **new free project**. Do not reuse the imported app's Supabase project. No deployment or paid account has been created by this implementation.
-2. For a genuinely new database only, run `supabase/migrations/202611070001_ugc.sql` once, followed by `supabase/migrations/202611080001_tracking_and_new_york.sql` once. Run the complete file as the SQL Editor’s `postgres` role; it is a one-time initial migration wrapped in a transaction. It creates normalized tables, private job/connection tables, RLS policies, server-only transactional RPCs, indexes and initial Versel defaults. It installs `pg_cron` in `pg_catalog` and `pg_net` in `extensions`; enable Cron/pg_net in Integrations first if your project requires that. `pgcrypto` is not required because UUID generation uses PostgreSQL’s built-in function.
+2. For a genuinely new database only, run `supabase/migrations/202611070001_ugc.sql` once, followed by `supabase/migrations/202611080001_tracking_and_new_york.sql` and `supabase/migrations/202611080002_production_operations.sql`, each once in that order. Run the complete file as the SQL Editor’s `postgres` role; it is a one-time initial migration wrapped in a transaction. It creates normalized tables, private job/connection tables, RLS policies, server-only transactional RPCs, indexes and initial Versel defaults. It installs `pg_cron` in `pg_catalog` and `pg_net` in `extensions`; enable Cron/pg_net in Integrations first if your project requires that. `pgcrypto` is not required because UUID generation uses PostgreSQL’s built-in function.
 3. In Authentication settings disable **Allow new users to sign up**. Create the single administrator with a strong password through the Supabase dashboard (email confirmed). No client service-role key is needed or allowed.
 4. Add that user's UUID in SQL Editor:
 
@@ -83,23 +81,7 @@ For Supabase Cron, create these two secrets **through the Vault UI**, not in sou
 - `ugc_worker_url`: `https://YOUR_APPROVED_HOST/api/internal/jobs`
 - `ugc_cron_secret`: the exact `CRON_SECRET` on that host.
 
-Then run in SQL Editor:
-
-```sql
-select cron.schedule('ugc-worker-every-five-minutes', '*/5 * * * *', $job$
-  select net.http_post(
-    url := (select decrypted_secret from vault.decrypted_secrets where name='ugc_worker_url'),
-    headers := jsonb_build_object(
-      'Content-Type','application/json',
-      'Authorization','Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name='ugc_cron_secret')
-    ),
-    body := '{}'::jsonb,
-    timeout_milliseconds := 60000
-  );
-$job$);
-```
-
-The deployed host must support this execution duration and public inbound HTTP. Review actual free-host limits before choosing hosting. No paid hosting was provisioned. Check `cron.job_run_details`, `net._http_response`, dashboard sync history and accounts' last-success times. A successful Cron enqueue alone does not prove the HTTP worker succeeded. Free project pauses and host outages can interrupt collection. The attention queue flags accounts older than 24 hours; there is no email alert delivery in this MVP.
+Follow the [production deployment guide](docs/production-deployment.md) and run `supabase/operations/configure-production-cron.sql` manually after deploying. The current dispatcher records HTTP request IDs and health heartbeats, and keeps Vault values out of the Cron command. Supabase's managed pg_net queue temporarily contains decrypted authorization headers; restrict database access and keep operational schemas unexposed as described in the guide. A successful Cron enqueue alone does not prove HTTP success. Inspect **Needs attention → Automation health**, HTTP statuses and synchronization diagnostics. No scheduler is installed automatically.
 
 A canceled/expired OAuth grant records an error and cannot collect new metrics until reconnected. Past observations stay available locally. A provider timeout or missing counter is never converted to zero. Unknown provider freshness is explicit. Per-post collection status is separate from eligibility: active, closing, complete, or review. Closing follow-up lasts at most 24 elapsed hours after the deadline and requires a provider measurement timestamp at/after the deadline, no more than two hours behind collection, before collection completes. A successful request or a collection timestamp alone cannot close the window. Completion does not establish an exact cutoff or organic attribution. Polling can retain cached counts; it cannot reconstruct unseen traffic at an exact timestamp.
 
@@ -138,4 +120,4 @@ The imported app's App Router/TypeScript/Tailwind structure and path aliases rem
 
 ## Remaining live prerequisites
 
-A dedicated Supabase project, administrator account/email, a new free Zernio API key, an approved HTTPS host and a scheduled worker. None were available during implementation. Configure them only when ready; do not share secrets in chat. No service was purchased or deployed. Passing local tests does not establish provider entitlement, organic verification, historical API completeness or production reliability.
+The existing dedicated Supabase project, administrator and Free Zernio connection are reused. Remaining production steps: commercial Vercel hosting selected by the administrator, canonical HTTPS domain, production environment variables, the operations migration, and Supabase Vault/Cron configuration. No service was purchased or deployed and no live database was changed during deployment preparation. Passing local tests does not establish production uptime, provider entitlement, organic verification or historical API completeness.

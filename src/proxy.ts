@@ -1,12 +1,20 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { hostedDeployment, hostedPreview } from '@/lib/server/deployment';
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL,
     key =
       process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key || request.nextUrl.searchParams.get('preview') === '1') return response;
+  if (
+    hostedPreview() ||
+    !url ||
+    !key ||
+    (!hostedDeployment() && request.nextUrl.searchParams.get('preview') === '1')
+  )
+    return response;
   const client = createServerClient(url, key, {
+    cookieOptions: { httpOnly: true, secure: hostedDeployment(), sameSite: 'lax' },
     cookies: {
       getAll: () => request.cookies.getAll(),
       setAll: (values) => {

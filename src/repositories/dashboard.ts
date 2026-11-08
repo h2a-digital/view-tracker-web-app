@@ -6,9 +6,9 @@ export async function loadDashboard(): Promise<{ data: DashboardData; revision: 
   const { data, error } = await db.rpc('read_dashboard');
   if (error)
     throw new Error('Could not read the database. Apply the Supabase migration and seed first.');
-  if (data.schemaVersion !== 2 || data.accountingTimezone !== 'America/New_York')
+  if (data.schemaVersion !== 3 || data.accountingTimezone !== 'America/New_York')
     throw new Error(
-      'Apply the incremental migration 202611080001_tracking_and_new_york.sql before running this version. Do not rerun the original migration.'
+      'Apply the incremental migration 202611080002_production_operations.sql before running this version. Do not rerun the original migration.'
     );
   // PostgreSQL emits +00:00 and omits milliseconds; the domain compares canonical UTC instants.
   const dates = new Set([

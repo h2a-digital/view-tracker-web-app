@@ -1,5 +1,6 @@
 import { Dashboard } from '@/components/dashboard/Dashboard';
 import { Access } from '@/components/dashboard/Access';
+import { hostedDeployment, hostedPreview } from '@/lib/server/deployment';
 import { isConfigured } from '@/lib/server/config';
 import { requireAdmin } from '@/lib/server/supabase';
 import { loadDashboard } from '@/repositories/dashboard';
@@ -11,8 +12,10 @@ export default async function Page({
   searchParams: Promise<{ preview?: string }>;
 }) {
   const params = await searchParams;
-  if (params.preview === '1') return <Dashboard initial={demoWorkspace()} preview />;
-  if (!isConfigured()) return <Access setup />;
+  if (hostedPreview()) return <Access notice="Live access is disabled on preview deployments." />;
+  if (!hostedDeployment() && params.preview === '1')
+    return <Dashboard initial={demoWorkspace()} preview />;
+  if (!isConfigured()) return <Access setup={!hostedDeployment()} />;
   let state;
   let failure = '';
   try {

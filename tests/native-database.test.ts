@@ -69,6 +69,21 @@ it.skipIf(!socket)(
         `select has_function_privilege('anon','public.is_admin()','EXECUTE'),has_function_privilege('authenticated','public.commit_dashboard(bigint,jsonb)','EXECUTE'),has_table_privilege('authenticated','public.apps','TRUNCATE');`
       ).trim();
       expect(privileges).toBe('f|f|f');
+      sql(readFileSync('supabase/migrations/202611080002_production_operations.sql', 'utf8'));
+      const production = JSON.parse(
+        sql('set role service_role;select public.read_dashboard();').trim()
+      );
+      expect(production.schemaVersion).toBe(3);
+      expect(production.data).toEqual(upgraded.data);
+      expect(
+        JSON.parse(sql('set role service_role;select public.get_operations_status();').trim())
+          .invocations
+      ).toEqual([]);
+      expect(
+        sql(
+          "select has_function_privilege('anon','public.get_operations_status()','EXECUTE'),has_function_privilege('authenticated','public.record_worker_invocation(uuid,text,text,integer,integer,text)','EXECUTE'),has_function_privilege('service_role','public.commit_tracking_job(uuid,uuid,bigint,jsonb,boolean,text)','EXECUTE');"
+        ).trim()
+      ).toBe('f|f|t');
     } finally {
       sql(`drop database ${database};`, 'postgres');
     }

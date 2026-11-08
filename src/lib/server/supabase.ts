@@ -3,7 +3,9 @@ import { createServerClient } from '@supabase/ssr';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { configuration, isConfigured } from './config';
+import { assertLiveDeployment, hostedDeployment } from './deployment';
 export function adminDatabase() {
+  assertLiveDeployment();
   const c = configuration();
   if (!isConfigured()) throw new Error('Supabase is not configured. Follow the setup guide.');
   return createClient(c.url, c.secretKey, {
@@ -11,9 +13,11 @@ export function adminDatabase() {
   });
 }
 export async function sessionClient() {
+  assertLiveDeployment();
   const c = configuration();
   const store = await cookies();
   return createServerClient(c.url, c.publicKey, {
+    cookieOptions: { httpOnly: true, secure: hostedDeployment(), sameSite: 'lax' },
     cookies: {
       getAll: () => store.getAll(),
       setAll: (values) => {
@@ -29,6 +33,7 @@ export async function sessionClient() {
   });
 }
 export async function requireAdmin() {
+  assertLiveDeployment();
   if (!isConfigured()) throw new Error('SETUP_REQUIRED');
   const supabase = await sessionClient();
   const {

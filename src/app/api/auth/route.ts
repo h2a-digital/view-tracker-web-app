@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { configuration, isConfigured } from '@/lib/server/config';
-import { requireSameOrigin, sessionClient } from '@/lib/server/supabase';
+import { requireAdmin, requireSameOrigin, sessionClient } from '@/lib/server/supabase';
 export async function POST(request: Request) {
   try {
     requireSameOrigin(request);
@@ -14,6 +14,12 @@ export async function POST(request: Request) {
     const client = await sessionClient();
     const { error } = await client.auth.signInWithPassword({ email, password });
     if (error) throw new Error('Invalid administrator credentials.');
+    try {
+      await requireAdmin();
+    } catch {
+      await client.auth.signOut();
+      throw new Error('Invalid administrator credentials.');
+    }
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json(

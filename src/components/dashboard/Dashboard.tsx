@@ -1,4 +1,5 @@
 'use client';
+import { OperationsHealth } from './OperationsHealth';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -969,6 +970,7 @@ export function Dashboard({
             Refresh
           </button>
         </div>
+        <OperationsHealth preview={preview} />
         <section className="card">
           <div className="section-heading">
             <h2>Posts to review</h2>
