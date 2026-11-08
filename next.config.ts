@@ -1,5 +1,6 @@
 import type { NextConfig } from 'next';
 import { deploymentEnvironment } from './src/lib/deployment-environment';
+import { oauthPlatforms, oauthFormSecurity } from './src/lib/oauth-form-security';
 const environment = deploymentEnvironment(process.env);
 const config: NextConfig = {
   reactCompiler: true,
@@ -26,6 +27,15 @@ const config: NextConfig = {
         ],
       },
       { source: '/api/:path*', headers: [{ key: 'Cache-Control', value: 'no-store' }] },
+      // Override the global policies only for creator OAuth forms. Netlify applies
+      // next.config headers too, so keep them aligned with the route response.
+      ...oauthPlatforms.map((platform) => ({
+        source: `/api/oauth/${platform}/start`,
+        headers: Object.entries(oauthFormSecurity(platform)).map(([key, value]) => ({
+          key,
+          value,
+        })),
+      })),
     ];
   },
 };

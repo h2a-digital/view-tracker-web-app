@@ -19,6 +19,7 @@ import {
 import { providerJson } from './http';
 import { subjectFingerprint } from '@/services/lifecycle/identity';
 import { exchangeGoogle, type TokenBundle } from './tokens';
+import { consentPage } from './consent-page';
 const cookieName = 'ugc_creator_oauth';
 const validNonce = (v: string | null | undefined): v is string => !!v && /^[a-f0-9]{64}$/.test(v);
 const normal = (s: string) => s.trim().replace(/^@/, '').toLowerCase();
@@ -168,23 +169,7 @@ export async function oauthInvitation(request: Request, value: string) {
   if (!validNonce(ticket)) throw new Error('Invalid invitation.');
   const { data, error } = await adminDatabase().rpc('read_oauth_invite', { hash: digest(ticket) });
   if (error || !data || data.platform !== platform) throw new Error('Invitation expired.');
-  return new NextResponse(
-    `<!doctype html><html><head><title>Connect ${platform}</title></head><body>
-    <main><h1>Connect your ${platform} account to Creator Ledger</h1>
-    <p>This private company tool reads your account identity, published videos and available analytics for creator partnership tracking and compensation review. It cannot publish content or give you dashboard access.</p>
-    <p>Review our <a href="/integrations/privacy">privacy and data-use policy</a> and <a href="/integrations/delete-data">disconnection/deletion instructions</a> before continuing.</p>
-    ${platform === 'youtube' ? '<p>Creator Ledger uses YouTube API Services. By using this connection you also agree to the <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a>. Any compensation estimates are calculated by your partner company and are not approved or published by Google or YouTube.</p>' : ''}
-    <form method="post"><input type="hidden" name="ticket" value="${ticket}">
-    <label><input type="checkbox" name="consent" value="accepted" required>I agree to the privacy policy and authorize this read-only connection for the stated purpose.</label>
-    <button type="submit">Continue to ${platform}</button></form></main></body></html>`,
-    {
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-store',
-        'Referrer-Policy': 'no-referrer',
-      },
-    }
-  );
+  return consentPage(platform, ticket);
 }
 async function resolveMeta(
   platform: DirectPlatform,

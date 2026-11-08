@@ -114,10 +114,19 @@ describe('shared creator OAuth', () => {
     );
     const html = await response.text();
     expect(html).toContain('name="consent"');
+    expect(html).toContain('action="/api/oauth/youtube/start"');
+    expect(html).toContain('name="ticket" value="' + ticket + '"');
+    expect(html).toContain('name="viewport"');
+    expect(html).toContain('color-scheme:dark');
+    expect(html).toContain('required');
+    expect(response.headers.get('Referrer-Policy')).toBe('strict-origin');
+    expect(response.headers.get('Content-Security-Policy')).toContain(
+      "form-action 'self' https://accounts.google.com"
+    );
     expect(html).toContain('/integrations/privacy');
     expect(html).toContain('https://www.youtube.com/t/terms');
     expect(response.headers.get('location')).toBeNull();
-    expect(mocks.rpc).not.toHaveBeenCalledWith('start_oauth_flow', expect.anything());
+    expect(mocks.rpc.mock.calls.map(([name]) => name)).toEqual(['read_oauth_invite']);
   });
   it('rejects an expired invite and incorrect browser state before calling a provider', async () => {
     const fetch = vi.fn();
@@ -140,6 +149,21 @@ describe('shared creator OAuth', () => {
       )
     ).rejects.toThrow('state');
     expect(fetch).not.toHaveBeenCalled();
+  });
+  it('revalidates the invitation on consent, rejects wrong-platform tickets and preserves cookie protections', async () => {
+    const request = new Request(`https://hub.example.com/api/oauth/youtube/start?ticket=${ticket}`);
+    await oauthInvitation(request, 'youtube');
+    mocks.rpc.mockResolvedValueOnce({ data: null, error: null });
+    await expect(startOAuth(request, 'youtube')).rejects.toThrow('expired');
+    expect(mocks.rpc.mock.calls.some(([name]) => name === 'start_oauth_flow')).toBe(false);
+    mocks.rpc.mockResolvedValueOnce({ data: { platform: 'instagram' }, error: null });
+    await expect(startOAuth(request, 'youtube')).rejects.toThrow('expired');
+    const response = await startOAuth(request, 'youtube');
+    expect(mocks.rpc.mock.calls.at(-1)![0]).toBe('start_oauth_flow');
+    expect(response.headers.get('set-cookie')).toContain('SameSite=lax');
+    expect(response.headers.get('set-cookie')).toContain('Path=/api/oauth');
+    expect(response.headers.get('set-cookie')).toContain('Max-Age=900');
+    expect(response.headers.get('Referrer-Policy')).toBe('no-referrer');
   });
   it('verifies the registered YouTube identity and stores only encrypted tokens atomically', async () => {
     const fetch = vi

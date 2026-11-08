@@ -143,3 +143,19 @@ Monitoring: **Needs attention → Automation health** exposes worker results, qu
 - Public home/privacy/deletion pages need a real company contact and approved operational policy. The automated source lifecycle now covers closed-window verification, deletion, revocation and expiration. Company accounting retention, backup/export handling and actual provider callback validation still require the rollout checklist. TikTok source history is outside these direct-provider erasure jobs.
 - Account tokens can be revoked; creators will occasionally need to reconnect. No integration can guarantee zero intervention, exact event-level cutoffs, fraud detection or a missing organic split.
 - The shared pilot workspace is loaded once per worker batch and reused after successful commits; optimistic conflicts invalidate that cache. It remains a full-workspace transaction model. Before a large 5–10-creator four-platform rollout, use scoped persistence/pagination and measure Netlify compute credits and Supabase egress/database growth. Free hosting is appropriate for the initial pilot, not a guarantee of unlimited unattended operation.
+
+## Consent form troubleshooting
+
+The creator consent page uses `Referrer-Policy: strict-origin`. Native browser form POSTs under `no-referrer` send `Origin: null`, which the unchanged same-origin guard rejects before invitation lookup, OAuth state creation or cookie issuance. `strict-origin` preserves the canonical origin while excluding invitation paths and query strings from referrers. Missing/null/foreign origins remain rejected.
+
+The consent page's CSP permits its own form endpoint plus the selected provider's fixed authorization host: Chromium also checks the external destination of a form's 303 redirect. The exception is restricted to the three direct OAuth `/start` paths in both the route response and Next.js/Netlify headers. Other pages retain their original policies. No database migration or credential rotation is required for this fix.
+
+Invitation GET is read-only. Consent POST revalidates the 30-minute invitation and creates a 15-minute browser-bound state/PKCE flow and HttpOnly, Secure production cookie (`SameSite=Lax`, `/api/oauth`). Only a successful callback consumes the invitation. Starting another flow invalidates the previous state. After deploying the consent-page fix, generate a fresh Connect link and reload the page rather than submitting an already-open page with the old headers.
+
+The optional real-browser regression uses isolated temporary Chrome profiles and localhost fixtures only:
+
+```sh
+UGC_TEST_CHROME='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm test
+```
+
+It reproduces the old Origin failure, checks Chromium's CSP redirect block, and confirms that the fixed native form reaches a local stand-in for the provider. It never connects a live account or contacts Google/Meta.
