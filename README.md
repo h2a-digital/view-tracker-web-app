@@ -6,6 +6,8 @@ Private UGC operations dashboard for multiple apps. Next.js App Router, React, T
 
 Follow [the Netlify Free + Supabase Cron deployment guide](docs/production-deployment.md). It lists all production environment variables, the existing **202611080002_production_operations.sql** operations migration (only if not already applied), Vault/Cron setup, HTTPS OAuth configuration, monitoring and cost constraints. Do not reset the existing database or rerun earlier migrations. Production deployment and live SQL changes remain manual.
 
+The repository is public and organization-owned; Netlify Free supports that Git integration. See the [repository and Git history security audit](docs/repository-security-audit.md) for audit scope, exposure findings and credential rotation guidance.
+
 ## Run locally
 
 Node 22.15+ is required (see `.nvmrc`).
