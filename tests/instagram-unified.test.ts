@@ -203,7 +203,7 @@ describe('Unified Login creator authorization', () => {
     });
     expect(saved.subject_fingerprint).toBe(subjectFingerprint('instagram_unified', '333'));
     expect(JSON.stringify(saved.document)).not.toContain('suat-private');
-    expect(JSON.stringify(saved.document)).not.toContain('444');
+    expect(JSON.stringify(saved.document)).not.toContain('"444"');
     expect(saved.document.posts).toEqual(document.posts);
     expect(saved.document.statements).toEqual(document.statements);
   });

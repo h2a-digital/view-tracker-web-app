@@ -38,6 +38,9 @@ export type CallbackTrace = {
   youtubeReadGranted?: boolean;
   youtubeAnalyticsGranted?: boolean;
   authorizedChannelCount?: number;
+  instagramTokenType?: 'SYSTEM_USER' | 'USER' | 'PAGE' | 'APP' | 'missing' | 'other';
+  instagramActorIdType?: 'string' | 'number' | 'null' | 'missing' | 'other';
+  instagramBusinessIdType?: 'string' | 'number' | 'null' | 'missing' | 'other';
 };
 class CallbackRejection extends Error {}
 export function rejectCallback(trace: CallbackTrace, reason: string, message: string): never {
@@ -118,6 +121,11 @@ export function reportCallbackFailure(trace: CallbackTrace, error: unknown) {
         : {}),
       ...(trace.youtubeAnalyticsGranted !== undefined
         ? { youtubeAnalyticsGranted: trace.youtubeAnalyticsGranted }
+        : {}),
+      ...(trace.instagramTokenType ? { instagramTokenType: trace.instagramTokenType } : {}),
+      ...(trace.instagramActorIdType ? { instagramActorIdType: trace.instagramActorIdType } : {}),
+      ...(trace.instagramBusinessIdType
+        ? { instagramBusinessIdType: trace.instagramBusinessIdType }
         : {}),
       ...(trace.authorizedChannelCount !== undefined
         ? { authorizedChannelCount: trace.authorizedChannelCount }

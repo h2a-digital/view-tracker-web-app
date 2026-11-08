@@ -5,7 +5,19 @@ import { oauthConfig, scopes } from './config';
 import { providerJson } from './http';
 import type { TokenBundle } from './tokens';
 import { rejectCallback, type CallbackTrace } from './diagnostics';
-const id = z.string().regex(/^\d+$/);
+// Graph identifiers are normally strings. Normalize only lossless numeric IDs;
+// never coerce null/objects or round a number beyond JavaScript's safe range.
+const id = z.union([
+  z.string().regex(/^[1-9]\d*$/),
+  z.number().int().positive().max(Number.MAX_SAFE_INTEGER).transform(String),
+]);
+function fieldType(value: unknown) {
+  if (value === undefined) return 'missing' as const;
+  if (value === null) return 'null' as const;
+  if (typeof value === 'string') return 'string' as const;
+  if (typeof value === 'number') return 'number' as const;
+  return 'other' as const;
+}
 /** Fixed-host cursor pagination; never follow an API-supplied URL. No message calls. */
 export async function assignedInstagramAccounts(
   origin: string,
@@ -69,6 +81,7 @@ export async function resolveUnifiedInstagram(
     .object({
       data: z.object({
         app_id: z.string(),
+        type: z.string().optional(),
         is_valid: z.boolean(),
         user_id: id,
         scopes: z.array(z.string()),
@@ -83,6 +96,18 @@ export async function resolveUnifiedInstagram(
         deadline
       )
     ).data;
+  trace.instagramTokenType =
+    debug.type === undefined
+      ? 'missing'
+      : ['SYSTEM_USER', 'USER', 'PAGE', 'APP'].includes(debug.type)
+        ? (debug.type as 'SYSTEM_USER' | 'USER' | 'PAGE' | 'APP')
+        : 'other';
+  if (debug.type === 'PAGE' || debug.type === 'APP')
+    rejectCallback(
+      trace,
+      'instagram_unified_token_type_invalid',
+      'Instagram authorization returned an incompatible token type.'
+    );
   if (!debug.is_valid || debug.app_id !== c.clientId)
     rejectCallback(
       trace,
@@ -132,9 +157,33 @@ export async function resolveUnifiedInstagram(
     );
   };
   trace.stage = 'instagram_unified_identity';
-  const identity = z
-    .object({ id, client_business_id: id })
-    .parse(await request(`${origin}/me?fields=id,client_business_id`));
+  // /me identifies the system-user actor, not the Instagram account. Business
+  // metadata is useful for the separate BISU management API, which we do not use
+  // for the configured non-expiring grant. It is not proof of Instagram ownership.
+  const body = await request(`${origin}/me?fields=client_business_id`);
+  const fields = z
+    .object({ id: z.unknown().optional(), client_business_id: z.unknown().optional() })
+    .safeParse(body);
+  trace.instagramActorIdType = fieldType(fields.success ? fields.data.id : undefined);
+  trace.instagramBusinessIdType = fieldType(
+    fields.success ? fields.data.client_business_id : undefined
+  );
+  const parsed = z.object({ id, client_business_id: id.nullish() }).safeParse(body);
+  if (!parsed.success)
+    rejectCallback(
+      trace,
+      !fields.success || !id.safeParse(fields.data.id).success
+        ? 'instagram_system_user_id_invalid'
+        : 'instagram_client_business_id_invalid',
+      'Meta returned an invalid Instagram authorization identity.'
+    );
+  const identity = parsed.data;
+  if (identity.id !== debug.user_id)
+    rejectCallback(
+      trace,
+      'instagram_system_user_mismatch',
+      'Meta authorization identity does not match the validated token.'
+    );
   trace.stage = 'instagram_unified_accounts';
   const accounts = await assignedInstagramAccounts(origin, request);
   const normal = (value: string) => value.replace(/^@/, '').toLowerCase();
@@ -155,7 +204,7 @@ export async function resolveUnifiedInstagram(
       authMode: 'unified_login',
       actorId: identity.id,
       deletionSubjectId: debug.user_id,
-      clientBusinessId: identity.client_business_id,
+      clientBusinessId: identity.client_business_id ?? undefined,
       configId: c.loginConfigId,
       issuedAt: new Date().toISOString(),
       expiresAt,

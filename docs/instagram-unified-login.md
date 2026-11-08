@@ -2,7 +2,7 @@
 
 New Instagram registrations use Meta **Unified Login**, Facebook Login for Business and a **Business Integration System User Access Token (SUAT)**. This replaces the default for the Instagram Login implementation, which newly created Meta apps cannot enable. Existing Facebook-based Instagram grants and existing Instagram Login grants with a remote account ID retain their original flow. Unconnected registrations made by the previous release now start Unified Login; request a fresh invitation after upgrading.
 
-No live services were changed. No new SQL migration is needed on schema **5**: the mode is stored in existing account JSON; business ID, configuration ID, system-user/deletion identifiers and token expiry are stored inside the encrypted grant. Do not rerun migrations or reset/reseed the database. Existing TikTok/Zernio, YouTube, Facebook Page connections, source history and compensation rules are preserved.
+No live services were changed. No new SQL migration is needed on schema **5**: the mode is stored in existing account JSON; business ID when returned, configuration ID, system-user/deletion identifiers and token expiry are stored inside the encrypted grant. Do not rerun migrations or reset/reseed the database. Existing TikTok/Zernio, YouTube, Facebook Page connections, source history and compensation rules are preserved.
 
 ## Confirmed Meta configuration
 
@@ -77,7 +77,7 @@ After reviewing and deploying the code through your normal **manual** process:
 - Authorization: Facebook OAuth dialog with Meta app ID, `config_id`, fixed redirect, one-use browser-bound state and `prompt=login`. Configuration/app changes invalidate in-flight invitations.
 - Exchange: server-side `GET https://graph.facebook.com/{version}/oauth/access_token`; no Instagram short/long-token exchange.
 - Token inspection: `/debug_token`, using the new Meta app credential. Validate required scopes and app identity; never log codes, tokens, cookies or raw provider payloads.
-- Business identity: `/me?fields=id,client_business_id`; `/me` is the system user, not the Instagram account.
+- Business metadata: `/me?fields=client_business_id`, following Meta’s documented request; `/me.id` is the system-user actor, not the Instagram account. The actor ID must match the validated token subject. IDs normalize from digit strings or safe positive integers only. Missing/null business metadata is not an identity failure: this non-expiring configuration does not use the separate BISU token-management API. A present malformed business ID still fails validation. Instagram authorization is established separately by the exact registered account in `/me/assigned_instagram_accounts`, with immutable-ID matching on reconnect. Error diagnostics contain only fixed field-type labels and known token-type categories, never response values.
 - Account discovery: `/me/assigned_instagram_accounts?fields=id,username`, paginated via fixed-host cursors. Select only the registered account. No Page discovery or Page token is involved.
 - Native Reels: `/{instagram-id}/media` and `/{media-id}/insights?metric=views&period=lifetime` on `graph.facebook.com`, with SUAT and app-secret proof using the **new app's secret**.
 - Periodic authorization/source checks use assigned Instagram accounts, not a comparison against `/me`'s system-user ID. Moving/removing assets or invalidating the token requires new consent; rate limits/temporary failures use existing retries. No extra Cron or Netlify function invocation is introduced.
