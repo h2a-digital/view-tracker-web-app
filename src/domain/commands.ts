@@ -369,6 +369,9 @@ export function runCommand(
         username,
         ownership: command.ownership,
         provider: command.provider,
+        ...(command.provider === 'direct' && command.platform === 'instagram'
+          ? { integration: { instagramAuthMode: 'unified_login' as const } }
+          : {}),
         provider_account_id: null,
         provider_profile_id: null,
         status: 'registered',

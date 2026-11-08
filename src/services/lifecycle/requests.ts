@@ -7,8 +7,16 @@ import { configuration } from '@/lib/server/config';
 import { digest, nonce } from '@/services/oauth/crypto';
 import { subjectFingerprint } from './identity';
 const valid = (v: unknown): v is string => typeof v === 'string' && /^[a-f0-9]{64}$/.test(v);
-export function verifyMetaRequest(value: string) {
-  const secret = process.env.META_APP_SECRET;
+export function verifyMetaRequest(
+  value: string,
+  family: 'meta' | 'instagram' | 'instagram_unified' = 'meta'
+) {
+  const secret =
+    family === 'instagram'
+      ? process.env.INSTAGRAM_APP_SECRET
+      : family === 'instagram_unified'
+        ? process.env.INSTAGRAM_META_APP_SECRET
+        : process.env.META_APP_SECRET;
   if (!secret || value.length > 16000) throw new Error('Invalid signed request.');
   const parts = value.split('.');
   if (parts.length !== 2 || parts.some((s) => !s || !/^[A-Za-z0-9_-]+$/.test(s)))
@@ -28,17 +36,20 @@ export function verifyMetaRequest(value: string) {
   )
     throw new Error('Invalid signed request.');
   return {
-    subject: subjectFingerprint('meta', data.user_id),
+    subject: subjectFingerprint(family, data.user_id),
     issuedAt: new Date(data.issued_at * 1000).toISOString(),
   };
 }
-export async function metaRemoval(request: Request) {
+export async function metaRemoval(
+  request: Request,
+  family: 'meta' | 'instagram' | 'instagram_unified' = 'meta'
+) {
   assertLiveDeployment();
   const raw = await request.text();
   if (raw.length > 20000) throw new Error('Invalid signed request.');
   const signed = new URLSearchParams(raw).get('signed_request');
   if (!signed) throw new Error('Invalid signed request.');
-  const verified = verifyMetaRequest(signed),
+  const verified = verifyMetaRequest(signed, family),
     code = nonce();
   const result = await adminDatabase().rpc('erase_meta_subject', {
     subject_fingerprint: verified.subject,
@@ -66,7 +77,7 @@ export async function deletionForm(request: Request) {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'Cache-Control': 'no-store',
-        'Referrer-Policy': 'no-referrer',
+        'Referrer-Policy': 'strict-origin',
       },
     }
   );

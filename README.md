@@ -10,7 +10,7 @@ The repository is public and organization-owned; Netlify Free supports that Git 
 
 ## Direct platform integrations
 
-YouTube Shorts candidates, Instagram professional accounts linked to Pages, and Facebook Page Reels now have direct read-only OAuth/provider adapters. TikTok stays on Zernio. Follow [Google/Meta setup and production gates](docs/direct-integrations.md), including the **202611080003_direct_integrations.sql** incremental migration from schema 3 to 4, followed by **202611080004_provider_lifecycle.sql** to schema 5. Do not activate external OAuth apps until permissions, metric definitions, policy approval and retention/deletion obligations are resolved.
+YouTube Shorts candidates, Instagram Professional accounts through Unified Login (business portfolio required, no linked Page required), existing Facebook-based Instagram grants, and Facebook Page Reels now have direct performance-tracking adapters. Unified Login includes a Meta-required messaging permission that Creator Ledger does not use. TikTok stays on Zernio. New Instagram setup: [Unified Login rollout](docs/instagram-unified-login.md). Follow [Google/Meta setup and production gates](docs/direct-integrations.md), including the **202611080003_direct_integrations.sql** incremental migration from schema 3 to 4, followed by **202611080004_provider_lifecycle.sql** to schema 5. Do not activate external OAuth apps until permissions, metric definitions, policy approval and retention/deletion obligations are resolved.
 
 ## Run locally
 

@@ -41,6 +41,7 @@ export type SocialAccount = {
   ownership: 'company' | 'creator';
   provider: 'manual' | 'zernio' | 'direct';
   integration?: {
+    instagramAuthMode?: 'instagram_login' | 'facebook_login' | 'unified_login';
     sourceErasedAt?: string;
     payoutsBlocked?: boolean;
     policyReason?: string;

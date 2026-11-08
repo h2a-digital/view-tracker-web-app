@@ -27,6 +27,10 @@ const config: NextConfig = {
         ],
       },
       { source: '/api/:path*', headers: [{ key: 'Cache-Control', value: 'no-store' }] },
+      {
+        source: '/integrations/delete-data/request',
+        headers: [{ key: 'Referrer-Policy', value: 'strict-origin' }],
+      },
       // Override the global policies only for creator OAuth forms. Netlify applies
       // next.config headers too, so keep them aligned with the route response.
       ...oauthPlatforms.map((platform) => ({

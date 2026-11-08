@@ -9,10 +9,20 @@ export default function Integrations() {
           performance and compensation.
         </p>
         <p>
-          A creator can authorize read-only YouTube, Instagram or Facebook access using an expiring
-          invitation from the administrator. Authorization permits discovery and analytics
+          A creator can authorize YouTube, Instagram or Facebook performance tracking using an
+          expiring invitation from the administrator. Authorization permits discovery and analytics
           collection for the registered account. It does not create a dashboard login, publish posts
           or initiate payments.
+        </p>
+        <p>
+          New Instagram connections use Meta Unified Login with a Professional Creator or Business
+          account. A Facebook profile or linked Facebook Page is not required. Switch a personal
+          Instagram account to Professional before accepting an invitation. Select the business
+          portfolio that owns your account during login. Meta requires a messaging permission in
+          this configuration; Creator Ledger does not read, send, subscribe to or store messages.
+          Existing Instagram connections made through Facebook keep their original linked-Page
+          requirements. Facebook connections separately require a Page and a legitimate Facebook
+          profile with Page analytics access; personal-profile Reels are not supported.
         </p>
         <p>
           Creator Ledger uses YouTube API Services. Google and Meta handle account sign-in; your

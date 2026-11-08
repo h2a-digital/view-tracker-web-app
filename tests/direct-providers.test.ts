@@ -8,7 +8,12 @@ vi.mock('@/services/oauth/tokens', () => ({
 }));
 import { YouTubeProvider } from '@/services/tracking/direct/youtube';
 import { MetaProvider } from '@/services/tracking/direct/meta';
-import { durationSeconds, pacificDayBounds, safeCounter } from '@/services/tracking/direct/base';
+import {
+  DirectAccess,
+  durationSeconds,
+  pacificDayBounds,
+  safeCounter,
+} from '@/services/tracking/direct/base';
 import { providerJson, ProviderError } from '@/services/oauth/http';
 import type { SocialAccount } from '@/domain/model';
 const account = (platform: SocialAccount['platform']): SocialAccount => ({
@@ -335,4 +340,150 @@ describe('direct providers', () => {
     expect(Date.parse(spring.periodEnd) - Date.parse(spring.periodStart)).toBe(23 * 3600000);
     expect(Date.parse(fall.periodEnd) - Date.parse(fall.periodStart)).toBe(25 * 3600000);
   });
+});
+
+it('discovers native Instagram Login Reels and reads views on the Instagram host without Facebook credentials', async () => {
+  vi.stubEnv('INSTAGRAM_APP_ID', 'ig-app');
+  vi.stubEnv('INSTAGRAM_APP_SECRET', 'ig-secret');
+  vi.stubEnv('INSTAGRAM_GRAPH_VERSION', 'v27.0');
+  vi.stubEnv('META_APP_ID', '');
+  vi.stubEnv('META_APP_SECRET', '');
+  vi.stubEnv('INSTAGRAM_ORGANIC_VIEWS_VERIFIED', 'false');
+  const a = account('instagram');
+  a.integration = { instagramAuthMode: 'instagram_login' };
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(
+      json({
+        data: [
+          {
+            id: 'video1',
+            caption: 'Native Reel',
+            timestamp: '2026-11-01T12:00:00+0000',
+            permalink: 'https://www.instagram.com/reel/video1/',
+            media_product_type: 'REELS',
+          },
+          {
+            id: 'photo',
+            timestamp: '2026-11-01T12:00:00Z',
+            permalink: 'https://www.instagram.com/p/photo/',
+            media_product_type: 'FEED',
+          },
+        ],
+      })
+    )
+    .mockResolvedValueOnce(json({ data: [{ name: 'views', values: [{ value: 1200 }] }] }));
+  vi.stubGlobal('fetch', fetch);
+  const provider = new MetaProvider(a);
+  expect(await provider.discoverPosts('remote', '2026-11-01T00:00:00.000Z')).toEqual([
+    expect.objectContaining({
+      platformPostId: 'video1',
+      publishedAt: '2026-11-01T12:00:00.000Z',
+      contentType: 'reel',
+    }),
+  ]);
+  expect(await provider.fetchMetrics('remote', undefined, [target])).toEqual([
+    expect.objectContaining({
+      views: 1200,
+      metric: 'uncertain_views',
+      organicVerified: false,
+      providerUpdatedAt: null,
+      provenance: expect.objectContaining({
+        metricName: 'views',
+        apiVersion: 'v27.0',
+        kind: 'cumulative',
+      }),
+    }),
+  ]);
+  for (const [url, init] of fetch.mock.calls) {
+    expect(String(url)).toContain('https://graph.instagram.com/v27.0/');
+    expect(String(url)).not.toMatch(
+      /appsecret_proof|access_token|total_views|crossposted_views|facebook_views/
+    );
+    expect(init.headers).toEqual({ Authorization: 'Bearer token' });
+  }
+});
+
+function unifiedAccount() {
+  vi.stubEnv('INSTAGRAM_META_APP_ID', '123456');
+  vi.stubEnv('INSTAGRAM_META_APP_SECRET', 'unified-secret');
+  vi.stubEnv('INSTAGRAM_LOGIN_CONFIG_ID', '4372319632985486');
+  vi.stubEnv('INSTAGRAM_GRAPH_VERSION', 'v27.0');
+  return {
+    ...account('instagram'),
+    provider_account_id: '222',
+    integration: { instagramAuthMode: 'unified_login' as const },
+  };
+}
+it('discovers native SUAT Reels and collects uncertain views with proof from the separate Meta app', async () => {
+  const a = unifiedAccount();
+  vi.stubEnv('INSTAGRAM_ORGANIC_VIEWS_VERIFIED', 'false');
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(
+      json({
+        data: [
+          {
+            id: '777',
+            caption: 'Native Reel',
+            timestamp: target.publishedAt,
+            permalink: 'https://www.instagram.com/reel/test/',
+            media_product_type: 'REELS',
+          },
+        ],
+      })
+    )
+    .mockResolvedValueOnce(json({ data: [{ name: 'views', values: [{ value: 1200 }] }] }));
+  vi.stubGlobal('fetch', fetch);
+  const provider = new MetaProvider(a);
+  expect(await provider.discoverPosts('222', '2026-11-01T00:00:00Z')).toEqual([
+    expect.objectContaining({ platformPostId: '777' }),
+  ]);
+  expect(
+    await provider.fetchMetrics('222', undefined, [{ ...target, platformPostId: '777' }])
+  ).toEqual([
+    expect.objectContaining({
+      views: 1200,
+      metric: 'uncertain_views',
+      organicVerified: false,
+      providerUpdatedAt: null,
+    }),
+  ]);
+  for (const [url, init] of fetch.mock.calls) {
+    expect(new URL(String(url)).hostname).toBe('graph.facebook.com');
+    expect(String(url)).toContain('appsecret_proof=');
+    expect(String(url)).not.toMatch(/messages|conversations|access_token|total_views/);
+    expect(init.headers).toEqual({ Authorization: 'Bearer token' });
+  }
+});
+it.each([
+  'https://graph.facebook.com/v27.0/222/messages',
+  'https://graph.facebook.com/v27.0/222/conversations',
+  'https://graph.facebook.com/v27.0/222?fields=messages',
+  'https://graph.facebook.com/v27.0/222/media?fields=id,messages',
+  'https://graph.facebook.com/v27.0/222/insights?metric=views&period=lifetime&fields=messages',
+  'https://attacker.example/v27.0/me/assigned_instagram_accounts?fields=id,username',
+])(
+  'blocks non-tracking Unified request %s before reading a credential or making an API call',
+  async (url) => {
+    const access = new DirectAccess(unifiedAccount(), Date.now() + 10000);
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    token.get.mockClear();
+    await expect(access.request(url)).rejects.toThrow('not permitted');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(token.get).not.toHaveBeenCalled();
+  }
+);
+it('erases revoked SUAT credentials safely instead of applying Instagram refresh', async () => {
+  const access = new DirectAccess(unifiedAccount(), Date.now() + 10000);
+  const fetch = vi.fn().mockResolvedValue(json({ error: { code: 190 } }, 400));
+  vi.stubGlobal('fetch', fetch);
+  await expect(
+    access.request(
+      'https://graph.facebook.com/v27.0/me/assigned_instagram_accounts?fields=id,username'
+    )
+  ).rejects.toThrow('Reconnect');
+  expect(token.revoke).toHaveBeenCalledOnce();
+  expect(fetch).toHaveBeenCalledOnce();
 });

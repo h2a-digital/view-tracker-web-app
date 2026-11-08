@@ -69,6 +69,7 @@ it('requires a valid private link, explicit confirmation and same-origin POST', 
     new Request(`https://hub.example.com/integrations/delete-data/request?ticket=${ticket}`)
   );
   expect(await response.text()).toContain('does not delete any content');
+  expect(response.headers.get('Referrer-Policy')).toBe('strict-origin');
   const req = (origin: string, confirm = 'delete') =>
     new Request('https://hub.example.com/integrations/delete-data/request', {
       method: 'POST',
@@ -90,4 +91,55 @@ it('does not expose account information through receipt lookup and rejects unkno
     (await deletionStatus(new Request(`https://hub.example.com/api/privacy/status?code=${ticket}`)))
       .status
   ).toBe(404);
+});
+
+it('isolates Instagram signed callbacks by app secret and actor namespace from legacy Facebook grants', async () => {
+  vi.stubEnv('INSTAGRAM_APP_SECRET', 'instagram-secret');
+  const payload = signed().split('.')[1];
+  const instagram =
+    createHmac('sha256', 'instagram-secret').update(payload).digest('base64url') + '.' + payload;
+  expect(() => verifyMetaRequest(instagram)).toThrow();
+  expect(() => verifyMetaRequest(signed(), 'instagram')).toThrow();
+  expect(verifyMetaRequest(instagram, 'instagram').subject).not.toBe(
+    verifyMetaRequest(signed()).subject
+  );
+  const response = await metaRemoval(
+    new Request('https://hub.example.com/api/oauth/instagram/delete-data', {
+      method: 'POST',
+      body: new URLSearchParams({ signed_request: instagram }),
+    }),
+    'instagram'
+  );
+  expect(response.status).toBe(200);
+  expect(mocks.rpc).toHaveBeenCalledWith(
+    'erase_meta_subject',
+    expect.objectContaining({
+      subject_fingerprint: verifyMetaRequest(instagram, 'instagram').subject,
+    })
+  );
+});
+
+it('isolates Unified Login signed removals from both legacy Meta app secrets and fingerprint namespaces', async () => {
+  vi.stubEnv('INSTAGRAM_META_APP_SECRET', 'unified-secret');
+  vi.stubEnv('INSTAGRAM_APP_SECRET', 'instagram-secret');
+  const payload = signed().split('.')[1];
+  const request =
+    createHmac('sha256', 'unified-secret').update(payload).digest('base64url') + '.' + payload;
+  expect(() => verifyMetaRequest(request, 'meta')).toThrow();
+  expect(() => verifyMetaRequest(request, 'instagram')).toThrow();
+  expect(() => verifyMetaRequest(signed(), 'instagram_unified')).toThrow();
+  const verified = verifyMetaRequest(request, 'instagram_unified');
+  expect(verified.subject).not.toBe(verifyMetaRequest(signed()).subject);
+  const response = await metaRemoval(
+    new Request('https://hub.example.com/api/oauth/instagram/unified/delete-data', {
+      method: 'POST',
+      body: new URLSearchParams({ signed_request: request }),
+    }),
+    'instagram_unified'
+  );
+  expect(response.status).toBe(200);
+  expect(mocks.rpc).toHaveBeenCalledWith(
+    'erase_meta_subject',
+    expect.objectContaining({ subject_fingerprint: verified.subject })
+  );
 });

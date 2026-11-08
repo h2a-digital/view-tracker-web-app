@@ -652,8 +652,12 @@ export function Dashboard({
           <Link2 size={19} />
           <p>
             TikTok uses Zernio’s two-account free allowance. YouTube, Instagram and Facebook use
-            direct read-only APIs. Provider credentials, approval and a verified metrics pilot are
-            required before production use.
+            direct read-only APIs. New Instagram connections require a Professional (Creator or
+            Business) account and access to its business portfolio; no Facebook Page is needed. Meta
+            Unified Login includes a required messaging permission, which Creator Ledger does not
+            use. Existing Facebook-based Instagram connections and Facebook Pages keep their current
+            login. Provider credentials, approval and a verified metrics pilot are required before
+            production use.
           </p>
         </div>
         <div className="account-grid">

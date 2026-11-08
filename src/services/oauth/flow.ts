@@ -10,6 +10,8 @@ import { loadDashboard } from '@/repositories/dashboard';
 import type { DashboardData, SocialAccount } from '@/domain/model';
 import { digest, nonce, seal, unseal } from './crypto';
 import {
+  instagramAuthMode,
+  type InstagramAuthMode,
   directPlatform,
   oauthConfig,
   scopes,
@@ -19,6 +21,8 @@ import {
 import { providerJson } from './http';
 import { subjectFingerprint } from '@/services/lifecycle/identity';
 import { exchangeGoogle, type TokenBundle } from './tokens';
+import { resolveUnifiedInstagram } from './instagram-unified';
+import { resolveInstagram } from './instagram';
 import { consentPage } from './consent-page';
 import {
   rejectCallback,
@@ -95,7 +99,7 @@ export async function directConnectionAction(
   if (account.integration?.sourceErasedAt)
     throw new Error('Create a new registered account and fresh consent after erasure.');
   if (action !== 'connect') throw new Error('Unsupported connection action.');
-  oauthConfig(platform);
+  oauthConfig(platform, platform === 'instagram' ? instagramAuthMode(account) : 'facebook_login');
   const token = nonce();
   seal({}, 'key-check');
   const result = await db.rpc('create_oauth_invite', {
@@ -118,13 +122,14 @@ export async function directConnectionAction(
 export async function startOAuth(request: Request, value: string) {
   assertLiveDeployment();
   const platform = directPlatform(value),
-    c = oauthConfig(platform),
     ticket = new URL(request.url).searchParams.get('ticket');
   if (!validNonce(ticket)) throw new Error('Invalid invitation.');
   const db = adminDatabase(),
     { data: invite, error } = await db.rpc('read_oauth_invite', { hash: digest(ticket) });
   if (error || !invite || invite.platform !== platform)
     throw new Error('Invitation expired. Request a new link.');
+  const mode = await invitationMode(platform, invite.account_id);
+  const c = oauthConfig(platform, mode);
   const state = nonce(),
     browser = nonce(),
     verifier = nonce();
@@ -132,19 +137,33 @@ export async function startOAuth(request: Request, value: string) {
     invite_hash: digest(ticket),
     state_hash: digest(state),
     browser_hash: digest(browser),
-    encrypted_verifier: seal(verifier, digest(state)),
+    encrypted_verifier: seal(
+      platform === 'instagram'
+        ? {
+            instagramAuthMode: mode,
+            ...(mode === 'unified_login'
+              ? { configId: c.loginConfigId, clientId: c.clientId }
+              : {}),
+          }
+        : verifier,
+      digest(state)
+    ),
   });
   if (stored.error) throw new Error('Could not start authorization.');
   const url = new URL(
     platform === 'youtube'
       ? 'https://accounts.google.com/o/oauth2/v2/auth'
-      : `https://www.facebook.com/${c.version}/dialog/oauth`
+      : platform === 'instagram' && mode === 'instagram_login'
+        ? 'https://www.instagram.com/oauth/authorize'
+        : `https://www.facebook.com/${c.version}/dialog/oauth`
   );
   url.search = new URLSearchParams({
     client_id: c.clientId,
     redirect_uri: c.redirectUri,
     response_type: 'code',
-    scope: scopes(platform).join(platform === 'youtube' ? ' ' : ','),
+    ...(platform === 'instagram' && mode === 'unified_login'
+      ? {}
+      : { scope: scopes(platform, mode).join(platform === 'youtube' ? ' ' : ',') }),
     state,
     ...(platform === 'youtube'
       ? {
@@ -153,7 +172,11 @@ export async function startOAuth(request: Request, value: string) {
           code_challenge: createHash('sha256').update(verifier).digest('base64url'),
           code_challenge_method: 'S256',
         }
-      : { auth_type: 'rerequest', ...(c.loginConfigId ? { config_id: c.loginConfigId } : {}) }),
+      : platform === 'instagram' && mode === 'instagram_login'
+        ? { enable_fb_login: 'false', force_reauth: 'true' }
+        : platform === 'instagram' && mode === 'unified_login'
+          ? { config_id: c.loginConfigId!, prompt: 'login' }
+          : { auth_type: 'rerequest', ...(c.loginConfigId ? { config_id: c.loginConfigId } : {}) }),
   }).toString();
   const response = NextResponse.redirect(url, 303);
   response.headers.set('Cache-Control', 'no-store');
@@ -171,11 +194,25 @@ export async function oauthInvitation(request: Request, value: string) {
   assertLiveDeployment();
   const platform = directPlatform(value),
     ticket = new URL(request.url).searchParams.get('ticket');
-  oauthConfig(platform);
   if (!validNonce(ticket)) throw new Error('Invalid invitation.');
   const { data, error } = await adminDatabase().rpc('read_oauth_invite', { hash: digest(ticket) });
   if (error || !data || data.platform !== platform) throw new Error('Invitation expired.');
-  return consentPage(platform, ticket);
+  const mode = await invitationMode(platform, data.account_id);
+  oauthConfig(platform, mode);
+  return consentPage(platform, ticket, mode);
+}
+async function invitationMode(
+  platform: DirectPlatform,
+  accountId: string
+): Promise<InstagramAuthMode> {
+  if (platform !== 'instagram') return 'facebook_login';
+  const { data } = await loadDashboard();
+  const account = data.accounts.find(
+    (a) => a.id === accountId && a.platform === platform && a.provider === 'direct'
+  );
+  if (!account || account.integration?.sourceErasedAt)
+    throw new Error('Registered account is unavailable.');
+  return instagramAuthMode(account);
 }
 async function resolveMeta(
   platform: DirectPlatform,
@@ -337,6 +374,34 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
   trace.stage = 'registered_account';
   if (!registered)
     rejectCallback(trace, 'registered_account_missing', 'Registered account is unavailable.');
+  let mode: InstagramAuthMode = 'facebook_login';
+  if (platform === 'instagram') {
+    trace.stage = 'verifier_decryption';
+    const verifier = unseal<unknown>(flow.data.verifier, hash);
+    // Before Instagram Login, verifiers were random strings bound to Facebook Login.
+    if (typeof verifier !== 'string')
+      mode = z
+        .object({
+          instagramAuthMode: z.enum(['instagram_login', 'facebook_login', 'unified_login']),
+        })
+        .parse(verifier).instagramAuthMode;
+    if (mode === 'unified_login') {
+      const bound = z.object({ configId: z.string(), clientId: z.string() }).parse(verifier);
+      const c = oauthConfig('instagram', mode);
+      if (bound.configId !== c.loginConfigId || bound.clientId !== c.clientId)
+        rejectCallback(
+          trace,
+          'instagram_configuration_changed',
+          'Instagram configuration changed. Request a new invitation.'
+        );
+    }
+    if (mode !== instagramAuthMode(registered))
+      rejectCallback(
+        trace,
+        'instagram_login_mode_changed',
+        'Connection method changed. Request a new invitation.'
+      );
+  }
   let resourceId: string, bundle: TokenBundle;
   if (platform === 'youtube') {
     trace.stage = 'verifier_decryption';
@@ -396,6 +461,16 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
         'A different YouTube channel was authorized.'
       );
     resourceId = match.id;
+  } else if (platform === 'instagram' && mode === 'unified_login') {
+    ({ resourceId, bundle } = await resolveUnifiedInstagram(
+      code,
+      registered.username,
+      registered.provider_account_id,
+      deadline,
+      trace
+    ));
+  } else if (platform === 'instagram' && mode === 'instagram_login') {
+    ({ resourceId, bundle } = await resolveInstagram(code, registered.username, deadline, trace));
   } else {
     trace.stage = 'meta_authorization';
     ({ resourceId, bundle } = await resolveMeta(platform, code, registered.username, deadline));
@@ -405,7 +480,14 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
   const { data, revision } = await loadDashboard(),
     account = data.accounts.find((a) => a.id === registered.id);
   trace.stage = 'account_revalidation';
-  if (!account || account.username !== registered.username || account.provider !== 'direct')
+  if (
+    !account ||
+    account.username !== registered.username ||
+    account.provider !== 'direct' ||
+    account.platform !== platform ||
+    account.integration?.sourceErasedAt ||
+    (platform === 'instagram' && instagramAuthMode(account) !== mode)
+  )
     rejectCallback(
       trace,
       'registered_account_changed',
@@ -416,6 +498,7 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
   account.error = null;
   account.last_synced_at = null;
   account.integration = {
+    ...(platform === 'instagram' ? { instagramAuthMode: mode } : {}),
     payoutsBlocked: platform === 'youtube' && !youtubePolicyApproved(),
     policyReason:
       platform === 'youtube' && !youtubePolicyApproved()
@@ -427,15 +510,21 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
     id: crypto.randomUUID(),
     action: 'connect',
     entity_id: account.id,
-    detail: `${platform} read-only OAuth identity verified. No dashboard access granted.`,
+    detail: `${platform} OAuth identity verified. Tracking only; no dashboard access granted.`,
     created_at: new Date().toISOString(),
   });
   const deletionTicket = nonce();
   trace.stage = 'token_encryption';
   const encryptedToken = seal(bundle, account.id);
   const subject = subjectFingerprint(
-    platform === 'youtube' ? 'google' : 'meta',
-    bundle.actorId || resourceId
+    platform === 'youtube'
+      ? 'google'
+      : platform === 'instagram' && mode === 'unified_login'
+        ? 'instagram_unified'
+        : platform === 'instagram' && mode === 'instagram_login'
+          ? 'instagram'
+          : 'meta',
+    bundle.deletionSubjectId || bundle.actorId || resourceId
   );
   trace.stage = 'database_commit';
   const committed = await db.rpc('commit_direct_connection', {

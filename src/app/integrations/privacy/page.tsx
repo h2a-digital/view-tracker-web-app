@@ -13,6 +13,11 @@ export default function Privacy() {
           visible only to the authorized company administrator.
         </p>
         <p>
+          Meta Unified Login includes a required messaging permission, but Creator Ledger never
+          reads, sends, subscribes to or stores messages. Its API use is limited to account
+          identity, published Reels and performance analytics.
+        </p>
+        <p>
           OAuth credentials are encrypted in the private database and used server-side. They are not
           included in the dashboard or shared with other creators. Hosting and database processing
           use Netlify and Supabase. TikTok uses the separate Zernio integration; the direct YouTube
@@ -33,7 +38,8 @@ export default function Privacy() {
         <p>
           You can revoke Google access at{' '}
           <a href="https://myaccount.google.com/permissions">Google account permissions</a> or Meta
-          access in your account’s app/business integrations settings. See{' '}
+          access in your account’s app/business integrations settings. For Instagram Login, use
+          Instagram Settings → Website permissions → Apps and websites. See{' '}
           <a href="https://policies.google.com/privacy">Google Privacy Policy</a> and{' '}
           <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a>.
         </p>

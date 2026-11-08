@@ -18,6 +18,13 @@ export async function GET() {
             process.env.GOOGLE_CLIENT_SECRET &&
             process.env.OAUTH_TOKEN_ENCRYPTION_KEY
           ),
+          instagramConfigured: !!(
+            process.env.INSTAGRAM_META_APP_ID &&
+            process.env.INSTAGRAM_META_APP_SECRET &&
+            process.env.INSTAGRAM_LOGIN_CONFIG_ID &&
+            process.env.INSTAGRAM_GRAPH_VERSION &&
+            process.env.OAUTH_TOKEN_ENCRYPTION_KEY
+          ),
           metaConfigured: !!(
             process.env.META_APP_ID &&
             process.env.META_APP_SECRET &&

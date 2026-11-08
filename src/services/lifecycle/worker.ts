@@ -2,7 +2,8 @@ import 'server-only';
 import { z } from 'zod';
 import { adminDatabase } from '@/lib/server/supabase';
 import { DirectAccess } from '@/services/tracking/direct/base';
-import { oauthConfig } from '@/services/oauth/config';
+import { oauthConfig, metaGraphOrigin, instagramAuthMode } from '@/services/oauth/config';
+import { assignedInstagramAccounts } from '@/services/oauth/instagram-unified';
 import { unseal } from '@/services/oauth/crypto';
 import type { TokenBundle } from '@/services/oauth/tokens';
 import type { SocialAccount } from '@/domain/model';
@@ -68,11 +69,29 @@ export async function checkSources(db: DB, deadline: number) {
         }
       }
     } else {
-      const origin = `https://graph.facebook.com/${oauthConfig(job.account.platform as 'instagram' | 'facebook').version}`;
-      const identity = z
-        .object({ id: z.string() })
-        .parse(await access.request(`${origin}/${remote}?fields=id`));
-      if (identity.id !== job.account.provider_account_id) {
+      const origin = metaGraphOrigin(job.account);
+      const directInstagram =
+        job.account.platform === 'instagram' &&
+        instagramAuthMode(job.account) === 'instagram_login';
+      const unified =
+        job.account.platform === 'instagram' && instagramAuthMode(job.account) === 'unified_login';
+      const assigned = unified
+        ? await assignedInstagramAccounts(origin, (url) => access.request(url))
+        : null;
+      const body = unified
+        ? {
+            id:
+              assigned!.find((account) => account.id === job.account.provider_account_id)?.id || '',
+          }
+        : await access.request(
+            directInstagram
+              ? `${origin}/me?fields=user_id,username`
+              : `${origin}/${remote}?fields=id`
+          );
+      const id = directInstagram
+        ? z.object({ user_id: z.string() }).parse(body).user_id
+        : z.object({ id: z.string() }).parse(body).id;
+      if (id !== job.account.provider_account_id) {
         await access.token.revoke();
         return true;
       }
@@ -143,6 +162,15 @@ export async function processRevocation(db: DB, deadline: number) {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ token: token.refreshToken || token.accessToken }),
       };
+    } else if (job.platform === 'instagram' && token.authMode === 'unified_login') {
+      const c = oauthConfig('instagram', 'unified_login');
+      const proof = createHmac('sha256', c.clientSecret).update(token.accessToken).digest('hex');
+      url = `https://graph.facebook.com/${c.version}/me/permissions?appsecret_proof=${proof}`;
+      init = { method: 'DELETE', headers: { Authorization: `Bearer ${token.accessToken}` } };
+    } else if (job.platform === 'instagram' && token.authMode === 'instagram_login') {
+      const c = oauthConfig('instagram', 'instagram_login');
+      url = `https://graph.instagram.com/${c.version}/me/permissions`;
+      init = { method: 'DELETE', headers: { Authorization: `Bearer ${token.accessToken}` } };
     } else {
       const c = oauthConfig(job.platform);
       if (!token.actorId || !token.revocationToken)

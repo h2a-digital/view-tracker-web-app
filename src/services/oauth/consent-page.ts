@@ -1,9 +1,14 @@
 import 'server-only';
 import { NextResponse } from 'next/server';
 import { oauthFormSecurity } from '@/lib/oauth-form-security';
-import type { DirectPlatform } from './config';
+import type { DirectPlatform, InstagramAuthMode } from './config';
 /** Inputs are a validated platform enum and a 64-character hexadecimal invitation. */
-export function consentPage(platform: DirectPlatform, ticket: string) {
+export function consentPage(
+  platform: DirectPlatform,
+  ticket: string,
+  mode: InstagramAuthMode = 'unified_login'
+) {
+  const unified = platform === 'instagram' && mode === 'unified_login';
   const name = { youtube: 'YouTube', instagram: 'Instagram', facebook: 'Facebook' }[platform];
   return new NextResponse(
     `<!doctype html>
@@ -28,18 +33,31 @@ button{width:100%;border:0;border-radius:10px;background:#b6a4fc;color:#191522;p
 @media(max-width:480px){main{padding:20px 12px}.card{padding:26px 22px;border-radius:16px}h1{font-size:27px}.brand{margin-bottom:26px}}
 </style></head><body><main><section class="card" aria-labelledby="connection-title">
 <div class="brand"><span class="mark" aria-hidden="true">C</span>Creator Ledger</div>
-<span class="badge">Read-only connection</span>
+<span class="badge">${unified ? 'Performance tracking connection' : 'Read-only connection'}</span>
 <h1 id="connection-title">Connect your ${name} account</h1>
 <p>Authorize Creator Ledger to track your published videos for your creator partnership.</p>
+${
+  platform === 'instagram'
+    ? `<p>${
+        mode === 'unified_login'
+          ? 'Use your Instagram Professional account (Creator or Business). Sign in with Instagram or Facebook, select the business portfolio that owns your account, and share the registered Instagram account. A linked Facebook Page is not required. Personal accounts must switch to Professional first. The optional ad account is not needed: you can skip it.'
+          : mode === 'instagram_login'
+            ? 'Use your Instagram Professional account (Creator or Business). Personal accounts must switch to Professional first. No Facebook account or linked Facebook Page is required.'
+            : 'This existing connection uses Facebook Login. Use the Facebook profile with analytics access to the Page linked to your Instagram Professional account.'
+      }</p>`
+    : ''
+}
+${platform === 'facebook' ? '<p>Connect a Facebook Page using your legitimate Facebook profile with Page analytics access. Personal-profile Reels are not supported.</p>' : ''}
 <div class="permissions"><strong>What this connection allows</strong><ul>
 <li>Read your account identity, published videos and available analytics.</li>
 <li>Share performance with your company administrator for compensation review.</li>
 <li>No publishing permissions or access to the administrator dashboard.</li></ul></div>
+${unified ? '<p class="terms">Meta requires <strong>instagram_manage_messages</strong> in this login configuration, in addition to <strong>instagram_basic</strong> and <strong>instagram_manage_insights</strong>. The messaging permission can allow message access, but Creator Ledger does not read, send, subscribe to, or store your messages. We use this connection only for account identity, published Reels and performance analytics. No advertising permissions are requested.</p>' : ''}
 <p class="terms">Review our <a href="/integrations/privacy">privacy and data-use policy</a> and <a href="/integrations/delete-data">disconnection and deletion instructions</a> before continuing.</p>
 ${platform === 'youtube' ? '<p class="terms">Creator Ledger uses YouTube API Services. By using this connection you also agree to the <a href="https://www.youtube.com/t/terms" rel="noreferrer">YouTube Terms of Service</a>. Compensation estimates are calculated by your partner company and are not approved or published by Google or YouTube.</p>' : ''}
 <form method="post" action="/api/oauth/${platform}/start">
 <input type="hidden" name="ticket" value="${ticket}">
-<label class="consent"><input type="checkbox" name="consent" value="accepted" required><span>I agree to the privacy policy and authorize this read-only connection for the stated purpose.</span></label>
+<label class="consent"><input type="checkbox" name="consent" value="accepted" required><span>I agree to the privacy policy and authorize this ${unified ? 'connection with the disclosed permissions' : 'read-only connection'} for the stated purpose.</span></label>
 <button type="submit">Continue to ${name} <span aria-hidden="true">→</span></button></form>
 <p class="footer">You can revoke access or request source-data deletion at any time.</p>
 </section></main></body></html>`,

@@ -8,7 +8,7 @@ import type {
   MetricTarget,
   TrackingProvider,
 } from '../provider';
-import { oauthConfig } from '@/services/oauth/config';
+import { oauthConfig, instagramAuthMode, metaGraphOrigin } from '@/services/oauth/config';
 import { DirectAccess, safeCounter } from './base';
 // Graph commonly returns explicit compact UTC offsets (+0000). Normalize only
 // that unambiguous suffix; timezone-less/invalid dates still fail instantSchema.
@@ -40,7 +40,7 @@ export class MetaProvider implements TrackingProvider {
   ) {
     this.name = account.platform === 'instagram' ? 'instagram_official' : 'facebook_official';
     this.access = new DirectAccess(account, deadline);
-    this.origin = `https://graph.facebook.com/${oauthConfig(account.platform as 'instagram' | 'facebook').version}`;
+    this.origin = metaGraphOrigin(account);
   }
   capabilities() {
     return {
@@ -175,7 +175,10 @@ export class MetaProvider implements TrackingProvider {
                   : confirmedOrganic
                     ? 'provider_definition_verified_organic'
                     : 'organic_definition_unverified',
-              apiVersion: oauthConfig(this.account.platform as 'instagram' | 'facebook').version,
+              apiVersion: oauthConfig(
+                this.account.platform as 'instagram' | 'facebook',
+                instagram ? instagramAuthMode(this.account) : 'facebook_login'
+              ).version,
               contentType: 'reel',
             },
           });

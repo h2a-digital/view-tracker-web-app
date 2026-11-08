@@ -224,6 +224,7 @@ describe('shared creator OAuth', () => {
   });
   it('resolves a linked Instagram professional account and never exposes Page tokens in dashboard data', async () => {
     document.accounts[0].platform = 'instagram';
+    document.accounts[0].integration = { instagramAuthMode: 'facebook_login' };
     vi.stubGlobal(
       'fetch',
       vi

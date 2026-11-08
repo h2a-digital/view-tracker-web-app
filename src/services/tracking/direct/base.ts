@@ -3,7 +3,7 @@ import { createHmac } from 'node:crypto';
 import type { SocialAccount } from '@/domain/model';
 import { AccountToken } from '@/services/oauth/tokens';
 import { ProviderError, providerJson } from '@/services/oauth/http';
-import { oauthConfig } from '@/services/oauth/config';
+import { oauthConfig, instagramAuthMode } from '@/services/oauth/config';
 export class DirectAccess {
   readonly token: AccountToken;
   readonly patch: NonNullable<SocialAccount['integration']> = {};
@@ -18,10 +18,51 @@ export class DirectAccess {
     );
   }
   async request(url: string, retried = false): Promise<unknown> {
+    const mode =
+      this.account.platform === 'instagram' ? instagramAuthMode(this.account) : 'facebook_login';
+    if (mode === 'unified_login') {
+      const parsed = new URL(url),
+        c = oauthConfig('instagram', mode);
+      // Permit only the exact fields used for tracking, never Graph field expansion
+      // into messages/conversations or unrelated assets, even with a broad grant.
+      const prefix = `/${c.version}/`;
+      const path = parsed.pathname.startsWith(prefix) ? parsed.pathname.slice(prefix.length) : '';
+      const assigned = path === 'me/assigned_instagram_accounts';
+      const media = /^[0-9]+\/media$/.test(path);
+      const insights = /^[0-9]+\/insights$/.test(path);
+      const identity = /^[0-9]+$/.test(path);
+      const fields = parsed.searchParams.get('fields');
+      const allowed = insights
+        ? ['metric', 'period']
+        : identity
+          ? ['fields']
+          : ['fields', 'limit', 'after'];
+      if (
+        parsed.origin !== 'https://graph.facebook.com' ||
+        !(assigned || media || insights || identity) ||
+        [...parsed.searchParams.keys()].some((key) => !allowed.includes(key)) ||
+        (assigned && fields !== 'id,username') ||
+        (media && fields !== 'id,caption,timestamp,permalink,media_product_type') ||
+        (identity && fields !== 'id,caption') ||
+        (insights &&
+          (parsed.searchParams.get('metric') !== 'views' ||
+            parsed.searchParams.get('period') !== 'lifetime'))
+      )
+        throw new ProviderError(
+          'configuration',
+          'This Instagram endpoint is not permitted for tracking.'
+        );
+    }
     const token = await this.token.get();
     let target = url;
-    if (this.account.platform !== 'youtube') {
-      const c = oauthConfig(this.account.platform as 'instagram' | 'facebook'),
+    if (
+      this.account.platform !== 'youtube' &&
+      !(
+        this.account.platform === 'instagram' &&
+        instagramAuthMode(this.account) === 'instagram_login'
+      )
+    ) {
+      const c = oauthConfig(this.account.platform as 'instagram' | 'facebook', mode),
         parsed = new URL(url);
       parsed.searchParams.set(
         'appsecret_proof',

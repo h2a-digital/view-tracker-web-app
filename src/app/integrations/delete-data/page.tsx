@@ -8,7 +8,8 @@ export default function DeleteData() {
         <h1>Disconnect or request data deletion</h1>
         <p>
           To stop future access immediately, revoke Creator Ledger in your Google account
-          permissions or Meta app/business integration settings. You can also ask the company
+          permissions or Meta app/business integration settings. For Instagram Login use Instagram
+          Settings → Website permissions → Apps and websites. You can also ask the company
           administrator to disconnect and delete your source data. This also queues provider-side
           revocation. Shared provider grants may affect multiple connected accounts.
         </p>

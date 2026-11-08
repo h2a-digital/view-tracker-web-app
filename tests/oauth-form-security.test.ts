@@ -16,6 +16,7 @@ describe('OAuth native-form response policies', () => {
         platform === 'youtube' ? 'https://accounts.google.com' : 'https://www.facebook.com'
       );
       expect(csp).not.toContain(platform === 'youtube' ? 'facebook.com' : 'accounts.google.com');
+      if (platform === 'instagram') expect(csp).toContain('https://www.instagram.com');
       expect(csp).not.toContain('*');
     }
   );
@@ -26,6 +27,9 @@ describe('OAuth native-form response policies', () => {
     expect(global.headers.find((h) => h.key === 'Content-Security-Policy')?.value).toContain(
       "form-action 'self'"
     );
+    expect(
+      rules.find((r) => r.source === '/integrations/delete-data/request')?.headers
+    ).toContainEqual({ key: 'Referrer-Policy', value: 'strict-origin' });
     const formRules = rules.filter((r) => r.source.startsWith('/api/oauth/'));
     expect(formRules.map((r) => r.source)).toEqual(
       oauthPlatforms.map((p) => `/api/oauth/${p}/start`)
