@@ -4,6 +4,7 @@ import { adminDatabase } from '@/lib/server/supabase';
 import { seal, unseal } from './crypto';
 import { oauthConfig } from './config';
 import { providerJson, ProviderError } from './http';
+import { rejectCallback, type CallbackTrace } from './diagnostics';
 export type TokenBundle = {
   accessToken: string;
   refreshToken?: string;
@@ -21,7 +22,8 @@ const tokenResponse = z.object({
 export async function exchangeGoogle(
   code: string,
   verifier: string,
-  deadline = Date.now() + 45000
+  deadline = Date.now() + 45000,
+  trace?: CallbackTrace
 ) {
   const c = oauthConfig('youtube');
   const token = tokenResponse.parse(
@@ -42,10 +44,17 @@ export async function exchangeGoogle(
       deadline
     )
   );
-  if (!token.refresh_token)
+  if (!token.refresh_token) {
+    if (trace)
+      rejectCallback(
+        trace,
+        'offline_refresh_token_missing',
+        'Offline authorization was not granted. Request a new invitation and consent again.'
+      );
     throw new Error(
       'Offline authorization was not granted. Request a new invitation and consent again.'
     );
+  }
   return {
     accessToken: token.access_token,
     refreshToken: token.refresh_token,

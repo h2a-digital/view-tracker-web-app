@@ -159,3 +159,17 @@ UGC_TEST_CHROME='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' n
 ```
 
 It reproduces the old Origin failure, checks Chromium's CSP redirect block, and confirms that the fixed native form reaches a local stand-in for the provider. It never connects a live account or contacts Google/Meta.
+
+## Callback diagnostics
+
+A failed callback now displays a random reference ID. In Netlify, open the project's **Logs → Functions** (or the deployed Next.js server function's logs) and find `oauth_callback_failed` with that reference. The structured event contains only a fixed failure stage/reason, allow-listed provider HTTP/error codes, database SQLSTATE/PostgREST codes, required-scope booleans and a channel count. It never includes callback URLs, authorization codes, state values/hashes, cookies, account/channel identities, token payloads, encryption material, database documents, raw errors or stack traces.
+
+- `browser_cookie` / `flow_validation`: use the same browser and canonical HTTPS domain; request a fresh invitation if state expired or another flow invalidated it.
+- `google_token_exchange`: `invalid_client` indicates a mismatched Google client/secret; `invalid_grant` can indicate an expired/reused code or PKCE/redirect mismatch. Missing offline authorization has its own `offline_refresh_token_missing` reason. Keep the same OAuth encryption key across deploys.
+- `google_scope_validation`: both read-only scope booleans must be true. Scope validation uses Google's token response, never the untrusted callback query.
+- `google_channel_lookup`: `accessNotConfigured`/`SERVICE_DISABLED` requires enabling YouTube Data API v3 in the Google project owning the OAuth client. A Google consent screen alone does not prove this API is enabled.
+- `google_handle_resolution` / `google_channel_match`: register the exact handle or immutable channel ID and authorize its owning channel/Brand Account. The callback can resolve an actual handle with `channels.list(forHandle=...)` when `snippet.customUrl` is missing or a legacy alias, but still requires that resolved ID in the authorized `mine=true` result. Display names alone are not accepted.
+- `verifier_decryption` / `token_encryption`: check that `OAUTH_TOKEN_ENCRYPTION_KEY` is valid and unchanged; do not rotate it to troubleshoot.
+- `dashboard_load` / `database_commit`: schema 5 is required. Codes identify missing/stale RPC signatures, permissions, uniqueness conflicts or optimistic workspace conflicts without printing SQL payloads. Do not rerun migrations or change permissions blindly; use the reported stage/reason to determine the remedy.
+
+The handle-resolution fix requires no new Google scopes, Netlify variables or SQL migration. `APP_URL` must remain `https://creatorhub.h2adigital.com`, and the Google Web client's authorized callback must exactly match `https://creatorhub.h2adigital.com/api/oauth/youtube/callback`. The generic error shown by older releases cannot identify which production stage failed retrospectively; capture the new reference after a fresh manual deployment/connection attempt if it persists.

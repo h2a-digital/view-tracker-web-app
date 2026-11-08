@@ -20,6 +20,12 @@ import { providerJson } from './http';
 import { subjectFingerprint } from '@/services/lifecycle/identity';
 import { exchangeGoogle, type TokenBundle } from './tokens';
 import { consentPage } from './consent-page';
+import {
+  rejectCallback,
+  reportCallbackFailure,
+  callbackDatabaseError,
+  type CallbackTrace,
+} from './diagnostics';
 const cookieName = 'ugc_creator_oauth';
 const validNonce = (v: string | null | undefined): v is string => !!v && /^[a-f0-9]{64}$/.test(v);
 const normal = (s: string) => s.trim().replace(/^@/, '').toLowerCase();
@@ -270,43 +276,83 @@ async function resolveMeta(
   );
 }
 export async function finishOAuth(request: Request, value: string) {
+  const trace: CallbackTrace = { stage: 'configuration', platform: 'unknown' };
+  try {
+    return await completeOAuth(request, value, trace);
+  } catch (error) {
+    throw reportCallbackFailure(trace, error);
+  }
+}
+async function completeOAuth(request: Request, value: string, trace: CallbackTrace) {
   assertLiveDeployment();
   const deadline = Date.now() + 45000;
   const platform = directPlatform(value),
     url = new URL(request.url),
     state = url.searchParams.get('state'),
     code = url.searchParams.get('code');
-  const browser = (await cookies()).get(cookieName)?.value;
-  if (
-    !validNonce(state) ||
-    !validNonce(browser) ||
-    !code ||
-    code.length > 4096 ||
-    url.searchParams.has('error')
-  )
-    throw new Error(
-      'Authorization was denied or its browser state expired. Request a new invitation.'
+  trace.platform = platform;
+  trace.stage = 'request_validation';
+  if (url.searchParams.has('error'))
+    rejectCallback(trace, 'provider_denied', 'Authorization was denied. Request a new invitation.');
+  if (!validNonce(state))
+    rejectCallback(
+      trace,
+      'state_parameter_invalid',
+      'Authorization state is invalid. Request a new invitation.'
     );
+  if (!code || code.length > 4096)
+    rejectCallback(
+      trace,
+      'authorization_code_missing_or_invalid',
+      'Authorization code is missing or invalid. Request a new invitation.'
+    );
+  trace.stage = 'browser_cookie';
+  const browser = (await cookies()).get(cookieName)?.value;
+  if (!validNonce(browser))
+    rejectCallback(
+      trace,
+      browser ? 'browser_cookie_invalid' : 'browser_cookie_missing',
+      'Authorization browser state is missing or invalid. Request a new invitation.'
+    );
+  trace.stage = 'flow_lookup';
   const db = adminDatabase(),
     hash = digest(state),
     flow = await db.rpc('read_oauth_flow', { hash });
-  if (
-    flow.error ||
-    !flow.data ||
-    flow.data.platform !== platform ||
-    flow.data.browser_hash !== digest(browser)
-  )
-    throw new Error('Authorization state is invalid or expired.');
+  if (flow.error) {
+    callbackDatabaseError(trace, flow.error);
+    rejectCallback(trace, trace.reason!, 'Could not read authorization state.');
+  }
+  trace.stage = 'flow_validation';
+  if (!flow.data)
+    rejectCallback(trace, 'flow_expired_or_consumed', 'Authorization state is invalid or expired.');
+  if (flow.data.platform !== platform)
+    rejectCallback(trace, 'flow_platform_mismatch', 'Authorization state is invalid or expired.');
+  if (flow.data.browser_hash !== digest(browser))
+    rejectCallback(trace, 'browser_state_mismatch', 'Authorization state is invalid or expired.');
+  trace.stage = 'dashboard_load';
   const initial = await loadDashboard(),
     registered = initial.data.accounts.find(
       (a) => a.id === flow.data.account_id && a.provider === 'direct' && a.platform === platform
     );
-  if (!registered) throw new Error('Registered account is unavailable.');
+  trace.stage = 'registered_account';
+  if (!registered)
+    rejectCallback(trace, 'registered_account_missing', 'Registered account is unavailable.');
   let resourceId: string, bundle: TokenBundle;
   if (platform === 'youtube') {
-    bundle = await exchangeGoogle(code, unseal<string>(flow.data.verifier, hash), deadline);
-    if (scopes(platform).some((scope) => !bundle.scopes.includes(scope)))
-      throw new Error('Both read-only YouTube permissions are required.');
+    trace.stage = 'verifier_decryption';
+    const verifier = unseal<string>(flow.data.verifier, hash);
+    trace.stage = 'google_token_exchange';
+    bundle = await exchangeGoogle(code, verifier, deadline, trace);
+    trace.stage = 'google_scope_validation';
+    trace.youtubeReadGranted = bundle.scopes.includes(scopes(platform)[0]);
+    trace.youtubeAnalyticsGranted = bundle.scopes.includes(scopes(platform)[1]);
+    if (!trace.youtubeReadGranted || !trace.youtubeAnalyticsGranted)
+      rejectCallback(
+        trace,
+        'required_scopes_missing',
+        'Both read-only YouTube permissions are required.'
+      );
+    trace.stage = 'google_channel_lookup';
     const result = googleChannels.parse(
       await providerJson(
         'https://www.googleapis.com/youtube/v3/channels?part=id,snippet&mine=true',
@@ -314,20 +360,57 @@ export async function finishOAuth(request: Request, value: string) {
         deadline
       )
     );
-    const match = result.items.find(
+    trace.authorizedChannelCount = result.items.length;
+    let match = result.items.find(
       (item) =>
         item.id === registered.username ||
         normal(item.snippet.customUrl || '') === normal(registered.username)
     );
-    if (!match) throw new Error('A different YouTube channel was authorized.');
+    // customUrl can be a legacy alias or absent. Resolve an actual handle to its
+    // immutable ID, then require that ID in the authorized mine=true result.
+    if (!match && result.items.length && !/^UC[A-Za-z0-9_-]{22}$/.test(registered.username)) {
+      trace.stage = 'google_handle_resolution';
+      let resolved: z.infer<typeof googleChannels>;
+      try {
+        const query = new URLSearchParams({ part: 'id,snippet', forHandle: registered.username });
+        resolved = googleChannels.parse(
+          await providerJson(
+            `https://www.googleapis.com/youtube/v3/channels?${query}`,
+            { headers: { Authorization: `Bearer ${bundle.accessToken}` } },
+            deadline
+          )
+        );
+      } catch (error) {
+        // Keep existing rejection semantics; provider errors remain safely classified.
+        if (error instanceof Error && error.name === 'ZodError')
+          trace.reason = 'channel_response_invalid';
+        throw error;
+      }
+      match = result.items.find((item) => resolved.items.some((target) => target.id === item.id));
+    }
+    trace.stage = 'google_channel_match';
+    if (!match)
+      rejectCallback(
+        trace,
+        result.items.length ? 'registered_channel_mismatch' : 'authorized_channel_missing',
+        'A different YouTube channel was authorized.'
+      );
     resourceId = match.id;
-  } else
+  } else {
+    trace.stage = 'meta_authorization';
     ({ resourceId, bundle } = await resolveMeta(platform, code, registered.username, deadline));
+  }
   // Reload after external requests; optimistic commit + one-use state remain atomic.
+  trace.stage = 'dashboard_reload';
   const { data, revision } = await loadDashboard(),
     account = data.accounts.find((a) => a.id === registered.id);
+  trace.stage = 'account_revalidation';
   if (!account || account.username !== registered.username || account.provider !== 'direct')
-    throw new Error('The registered account changed. Request a new invitation.');
+    rejectCallback(
+      trace,
+      'registered_account_changed',
+      'The registered account changed. Request a new invitation.'
+    );
   account.provider_account_id = resourceId;
   account.status = 'connected';
   account.error = null;
@@ -348,20 +431,31 @@ export async function finishOAuth(request: Request, value: string) {
     created_at: new Date().toISOString(),
   });
   const deletionTicket = nonce();
+  trace.stage = 'token_encryption';
+  const encryptedToken = seal(bundle, account.id);
+  const subject = subjectFingerprint(
+    platform === 'youtube' ? 'google' : 'meta',
+    bundle.actorId || resourceId
+  );
+  trace.stage = 'database_commit';
   const committed = await db.rpc('commit_direct_connection', {
     hash,
     expected_browser_hash: digest(browser),
     expected_revision: revision,
     document: data,
-    encrypted_token: seal(bundle, account.id),
-    subject_fingerprint: subjectFingerprint(
-      platform === 'youtube' ? 'google' : 'meta',
-      bundle.actorId || resourceId
-    ),
+    encrypted_token: encryptedToken,
+    subject_fingerprint: subject,
     deletion_hash: digest(deletionTicket),
   });
-  if (committed.error)
-    throw new Error('Could not save authorization safely. Request a new invitation.');
+  if (committed.error) {
+    callbackDatabaseError(trace, committed.error);
+    rejectCallback(
+      trace,
+      trace.reason!,
+      'Could not save authorization safely. Request a new invitation.'
+    );
+  }
+  trace.stage = 'response';
   const deletionUrl = new URL(
     `/integrations/delete-data/request?ticket=${deletionTicket}`,
     configuration().siteUrl
