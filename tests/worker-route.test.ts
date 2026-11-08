@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   load: vi.fn(),
   sync: vi.fn(),
   admin: vi.fn(),
+  provider: vi.fn(),
 }));
 vi.mock('@/lib/server/supabase', () => ({
   adminDatabase: mocks.database,
@@ -12,7 +13,13 @@ vi.mock('@/lib/server/supabase', () => ({
 }));
 vi.mock('@/repositories/dashboard', () => ({ loadDashboard: mocks.load }));
 vi.mock('@/services/tracking/sync', () => ({ synchronizeAccount: mocks.sync }));
-vi.mock('@/services/tracking/zernio', () => ({ ZernioProvider: class {} }));
+vi.mock('@/services/tracking/zernio', () => ({
+  ZernioProvider: class {
+    constructor(deadline: number) {
+      mocks.provider(deadline);
+    }
+  },
+}));
 import { POST } from '@/app/api/internal/jobs/route';
 import { GET } from '@/app/api/operations/route';
 const secret = 'random-test-secret-'.repeat(3);
@@ -26,7 +33,7 @@ function request(auth = `Bearer ${secret}`) {
 beforeEach(() => {
   vi.resetAllMocks();
   for (const [key, value] of Object.entries({
-    VERCEL_ENV: 'production',
+    CONTEXT: 'production',
     NEXT_PUBLIC_SUPABASE_URL: 'https://test.supabase.co',
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test',
     SUPABASE_SECRET_KEY: 'sb_secret_test',
@@ -64,9 +71,9 @@ describe('authenticated scheduled worker', () => {
     }
   );
   it('does not run on previews or with an insecure production origin', async () => {
-    vi.stubEnv('VERCEL_ENV', 'preview');
+    vi.stubEnv('CONTEXT', 'deploy-preview');
     expect((await POST(request())).status).toBe(503);
-    vi.stubEnv('VERCEL_ENV', 'production');
+    vi.stubEnv('CONTEXT', 'production');
     vi.stubEnv('APP_URL', 'http://localhost:3000');
     expect((await POST(request())).status).toBe(503);
     expect(mocks.database).not.toHaveBeenCalled();
@@ -143,6 +150,23 @@ describe('authenticated scheduled worker', () => {
       'record_worker_invocation',
       expect.objectContaining({ invocation_outcome: 'failed' })
     );
+  });
+  it('deducts startup latency from the provider budget', async () => {
+    const started = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(started);
+    mocks.load.mockImplementation(async () => {
+      clock.mockReturnValue(started + 10000);
+      return { data: { accounts: [{ id: 'account', status: 'connected' }] }, revision: 3 };
+    });
+    expect((await POST(request())).status).toBe(200);
+    expect(mocks.provider).toHaveBeenCalledWith(started + 45000);
+    expect(mocks.provider.mock.calls[0][0] - Date.now()).toBe(35000);
+  });
+  it('blocks baked preview deployments without runtime CONTEXT', async () => {
+    vi.stubEnv('CONTEXT', '');
+    vi.stubEnv('APP_DEPLOYMENT_ENV', 'preview');
+    expect((await POST(request())).status).toBe(503);
+    expect(mocks.database).not.toHaveBeenCalled();
   });
   it('requires administrator authorization before returning operations data', async () => {
     mocks.admin.mockRejectedValue(new Error('UNAUTHORIZED'));

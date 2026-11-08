@@ -1,7 +1,7 @@
 -- MANUAL, AFTER deploying the current production app and applying 202611080002.
 -- First create/update these secrets in Supabase Dashboard > Vault:
 -- ugc_worker_url = https://YOUR-CANONICAL-DOMAIN/api/internal/jobs
--- ugc_cron_secret = exactly the production Vercel CRON_SECRET
+-- ugc_cron_secret = exactly the production Netlify CRON_SECRET
 -- No secret values should be pasted into this file or committed.
 -- Supabase Cron (pg_cron) and pg_net must be enabled (original migration enables them).
 -- This script deliberately does not make an immediate HTTP request.

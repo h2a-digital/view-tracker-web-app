@@ -1,6 +1,10 @@
 import type { NextConfig } from 'next';
+import { deploymentEnvironment } from './src/lib/deployment-environment';
+const environment = deploymentEnvironment(process.env);
 const config: NextConfig = {
   reactCompiler: true,
+  // Safe build metadata only. Never add credentials to Next.js `env`.
+  env: { APP_DEPLOYMENT_ENV: environment },
   poweredByHeader: false,
   async headers() {
     return [
@@ -16,7 +20,7 @@ const config: NextConfig = {
             key: 'Content-Security-Policy',
             value: "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
           },
-          ...(process.env.VERCEL_ENV === 'production'
+          ...(environment !== 'development'
             ? [{ key: 'Strict-Transport-Security', value: 'max-age=31536000' }]
             : []),
         ],

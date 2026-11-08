@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { configurationIssues, assertLiveDeployment } from '@/lib/server/deployment';
+import {
+  deploymentEnvironment,
+  hostedDeployment,
+  hostedPreview,
+  type Environment,
+} from '@/lib/deployment-environment';
 const valid = {
   NEXT_PUBLIC_SUPABASE_URL: 'https://test.supabase.co',
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test',
@@ -8,17 +14,14 @@ const valid = {
   APP_URL: 'https://ledger.example.com',
   ZERNIO_API_KEY: 'private',
   CRON_SECRET: 'x'.repeat(32),
-  VERCEL_ENV: 'production',
+  CONTEXT: 'production',
 };
 afterEach(() => vi.unstubAllEnvs());
 describe('production deployment configuration', () => {
   it('accepts a secure production configuration and local development origin', () => {
     expect(configurationIssues(valid, true)).toEqual([]);
     expect(
-      configurationIssues(
-        { ...valid, VERCEL_ENV: 'development', APP_URL: 'http://localhost:3000' },
-        true
-      )
+      configurationIssues({ ...valid, CONTEXT: 'dev', APP_URL: 'http://localhost:3000' }, true)
     ).toEqual([]);
   });
   it.each([
@@ -44,7 +47,34 @@ describe('production deployment configuration', () => {
     );
   });
   it('blocks preview live database use even if production keys were mistakenly configured', () => {
-    vi.stubEnv('VERCEL_ENV', 'preview');
+    vi.stubEnv('CONTEXT', 'deploy-preview');
+    expect(() => assertLiveDeployment()).toThrow('PREVIEW_DISABLED');
+  });
+});
+
+describe('portable hosting detection', () => {
+  it.each<[Environment, string]>([
+    [{ CONTEXT: 'production', NETLIFY: 'true' }, 'production'],
+    [{ CONTEXT: 'deploy-preview', APP_DEPLOYMENT_ENV: 'production' }, 'preview'],
+    [{ CONTEXT: 'branch-deploy', APP_DEPLOYMENT_ENV: 'production' }, 'preview'],
+    [{ CONTEXT: 'staging' }, 'preview'],
+    [{ CONTEXT: 'production', APP_DEPLOYMENT_ENV: 'preview' }, 'preview'],
+    [{ APP_DEPLOYMENT_ENV: 'preview', NODE_ENV: 'production' }, 'preview'],
+    [{ APP_DEPLOYMENT_ENV: 'production', NODE_ENV: 'production' }, 'production'],
+    [{ APP_DEPLOYMENT_ENV: 'unexpected' }, 'preview'],
+    [{ NETLIFY: 'true' }, 'preview'],
+    [{ CONTEXT: 'dev', NODE_ENV: 'development' }, 'development'],
+    [{ NODE_ENV: 'development' }, 'development'],
+    [{ NODE_ENV: 'production' }, 'production'],
+    [{}, 'development'],
+  ])('classifies %j as %s', (env, expected) => {
+    expect(deploymentEnvironment(env)).toBe(expected);
+    expect(hostedDeployment(env)).toBe(expected !== 'development');
+    expect(hostedPreview(env)).toBe(expected === 'preview');
+  });
+  it('blocks a preview artifact when the runtime has no Netlify context', () => {
+    vi.stubEnv('CONTEXT', '');
+    vi.stubEnv('APP_DEPLOYMENT_ENV', 'preview');
     expect(() => assertLiveDeployment()).toThrow('PREVIEW_DISABLED');
   });
 });

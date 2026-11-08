@@ -64,7 +64,10 @@ type Counter = {
 export class ZernioProvider implements TrackingProvider {
   readonly name = 'zernio';
   private baseline = new Map<string, Counter[]>();
-  private budgetEnds = Date.now() + 45000;
+  private budgetEnds: number;
+  constructor(budgetEnds = Date.now() + 45000) {
+    this.budgetEnds = Math.min(budgetEnds, Date.now() + 45000);
+  }
   capabilities() {
     return {
       discovery: true,

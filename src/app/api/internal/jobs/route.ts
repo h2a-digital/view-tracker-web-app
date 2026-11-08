@@ -9,6 +9,9 @@ import { ZernioProvider } from '@/services/tracking/zernio';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 export async function POST(request: Request) {
+  // Include queue/database startup in the provider budget, leaving headroom for
+  // the atomic commit and heartbeat within Netlify's 60-second HTTP function.
+  const providerDeadline = Date.now() + 45000;
   const actual = request.headers.get('authorization') || '';
   const secret = configuration().cronSecret;
   const expected = `Bearer ${secret}`;
@@ -73,7 +76,11 @@ export async function POST(request: Request) {
         invocationId: id,
       });
     }
-    const next = await synchronizeAccount(data, job.account_id, new ZernioProvider());
+    const next = await synchronizeAccount(
+      data,
+      job.account_id,
+      new ZernioProvider(providerDeadline)
+    );
     const run = next.syncRuns.find((r) => r.account_id === job!.account_id);
     const failed = run?.status === 'failed';
     const { error } = await db.rpc('commit_tracking_job', {

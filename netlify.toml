@@ -1,0 +1,12 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Netlify automatically installs its supported Next.js/OpenNext adapter.
+# Keep /api/internal/jobs as a synchronous Node function (60-second host limit).
+# Supabase Cron is the only scheduler; no Netlify scheduled/background wrapper.
+# Credentials belong in the Netlify UI, never here. netlify.toml environment
+# values are build settings and do not supply serverless runtime secrets.

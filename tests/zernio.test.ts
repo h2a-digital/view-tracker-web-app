@@ -170,3 +170,12 @@ it('keeps a daily sample of unchanged cached counters with their original freshn
     vi.useRealTimers();
   }
 });
+
+it('does not fetch after the shared worker provider deadline', async () => {
+  vi.stubEnv('ZERNIO_API_KEY', 'test-key');
+  const fetch = vi.fn();
+  vi.stubGlobal('fetch', fetch);
+  const provider = new ZernioProvider(Date.now() - 1);
+  await expect(provider.listAccounts()).rejects.toThrow('time budget');
+  expect(fetch).not.toHaveBeenCalled();
+});

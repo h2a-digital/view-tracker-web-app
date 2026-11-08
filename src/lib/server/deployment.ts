@@ -1,11 +1,6 @@
 import 'server-only';
-type Environment = Record<string, string | undefined>;
-export function hostedPreview(env: Environment = process.env) {
-  return env.VERCEL_ENV === 'preview';
-}
-export function hostedDeployment(env: Environment = process.env) {
-  return env.VERCEL === '1' || env.VERCEL_ENV === 'production' || env.VERCEL_ENV === 'preview';
-}
+import { hostedDeployment, hostedPreview, type Environment } from '../deployment-environment';
+export { hostedDeployment, hostedPreview } from '../deployment-environment';
 export function configurationIssues(env: Environment = process.env, worker = false): string[] {
   const issues: string[] = [];
   for (const name of [
