@@ -3,6 +3,15 @@ import { useEffect, useState } from 'react';
 import { formatTimestamp } from '@/domain/time';
 type Health = {
   checkedAt: string;
+  lifecycle?: {
+    pendingRevocations: number;
+    failedRevocations: number;
+    pendingSourceChecks: number;
+    sourceCheckErrors: number;
+    oldestSuccessfulCheck: string | null;
+    lastDeletion: string | null;
+  };
+  integrations?: Record<string, boolean>;
   configurationIssues: string[];
   queue: Record<string, number>;
   schedules: { active: boolean; schedule: string }[];
@@ -96,6 +105,21 @@ export function OperationsHealth({ preview }: { preview: boolean }) {
               sampling near the cutoff. A successful request does not guarantee fresh provider
               metrics.
             </p>
+            {health.lifecycle && (
+              <p
+                role={
+                  health.lifecycle.failedRevocations || health.lifecycle.sourceCheckErrors
+                    ? 'alert'
+                    : undefined
+                }
+              >
+                Provider maintenance: {health.lifecycle.pendingSourceChecks} checks due ·{' '}
+                {health.lifecycle.sourceCheckErrors} checks awaiting retry ·{' '}
+                {health.lifecycle.pendingRevocations} revocations pending ·{' '}
+                {health.lifecycle.failedRevocations} revocations requiring provider-side
+                confirmation. Source data is erased independently of remote revocation retries.
+              </p>
+            )}
             <details>
               <summary>Worker and Cron diagnostics</summary>
               <pre className="diagnostics">
@@ -104,6 +128,8 @@ export function OperationsHealth({ preview }: { preview: boolean }) {
                     invocations: health.invocations,
                     httpRequests: health.httpRequests,
                     cronRuns: health.cronRuns,
+                    integrations: health.integrations,
+                    lifecycle: health.lifecycle,
                   },
                   null,
                   2

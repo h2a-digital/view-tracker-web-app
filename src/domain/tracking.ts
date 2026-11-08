@@ -4,22 +4,30 @@ export const freshnessHours = 2;
 const hour = 3600000;
 export function inWindow(post: Post, s: Snapshot) {
   return (
+    s.metric !== 'paid_views' &&
+    s.provenance?.kind !== 'daily' &&
+    !s.provenance?.supporting &&
     !!post.deadline &&
     s.observed_at >= post.published_at &&
     s.observed_at <= post.deadline &&
-    !!s.provider_updated_at &&
-    s.provider_updated_at >= post.published_at &&
-    s.provider_updated_at <= post.deadline
+    ((!!s.provider_updated_at &&
+      s.provider_updated_at >= post.published_at &&
+      s.provider_updated_at <= post.deadline) ||
+      (!s.provider_updated_at && s.provenance?.kind === 'cumulative'))
   );
 }
 export function provisionalViews(data: DashboardData, post: Post) {
+  if (data.accounts.find((a) => a.id === post.account_id)?.integration?.payoutsBlocked) return 0;
+  if (post.tracking?.contentType === 'other') return 0;
+  if (post.tracking?.contentType === 'shorts_candidate' && post.eligibility_status !== 'accepted')
+    return 0;
   if (post.eligibility_status === 'excluded') return 0;
   if (post.eligibility_status === 'accepted') return post.eligible_views ?? 0;
   const observations = data.snapshots
     .filter((s) => s.post_id === post.id && inWindow(post, s))
     .map((s) => ({
       views: s.views,
-      providerAt: s.provider_updated_at!,
+      providerAt: s.provider_updated_at ?? s.observed_at,
       observedAt: s.observed_at,
     }));
   const cached = post.tracking?.latestInWindow;
@@ -40,7 +48,14 @@ export function provisionalViews(data: DashboardData, post: Post) {
 }
 export function trackingState(data: DashboardData, post: Post, now: string): TrackingState {
   const snapshots = data.snapshots
-    .filter((s) => s.post_id === post.id && s.source === 'api')
+    .filter(
+      (s) =>
+        s.post_id === post.id &&
+        s.source === 'api' &&
+        s.metric !== 'paid_views' &&
+        s.provenance?.kind !== 'daily' &&
+        !s.provenance?.supporting
+    )
     .sort((a, b) => a.observed_at.localeCompare(b.observed_at));
   const prior = post.tracking;
   const firstSeenAt = prior?.firstSeenAt ?? snapshots[0]?.observed_at ?? now;
@@ -55,9 +70,19 @@ export function trackingState(data: DashboardData, post: Post, now: string): Tra
       ? (prior?.lastProviderAt ?? null)
       : (latest?.provider_updated_at ?? null);
   const followupUntil = deadline
-    ? new Date(new Date(deadline).getTime() + closingGraceHours * hour).toISOString()
+    ? new Date(
+        new Date(deadline).getTime() +
+          (data.accounts.find((a) => a.id === post.account_id)?.provider === 'direct'
+            ? 72
+            : closingGraceHours) *
+            hour
+      ).toISOString()
     : null;
   const issues: string[] = [];
+  if (data.accounts.find((a) => a.id === post.account_id)?.integration?.payoutsBlocked)
+    issues.push('provider_policy_blocked');
+  if (prior?.contentType === 'shorts_candidate') issues.push('shorts_classification_unverified');
+  if (prior?.contentType === 'other') issues.push('not_a_short');
   if (!post.campaign_id) issues.push('campaign_unassigned');
   const isHistorical = !!followupUntil && firstSeenAt > followupUntil;
   if (isHistorical) issues.push('historical_window_missing');
@@ -97,6 +122,7 @@ export function trackingState(data: DashboardData, post: Post, now: string): Tra
     issues.push('evidence_missing');
   if (prior?.lastError) issues.push('refresh_failed');
   return {
+    contentType: prior?.contentType,
     status,
     issues,
     firstSeenAt,
@@ -115,6 +141,10 @@ export function needsMetricPolling(state: TrackingState) {
   return state.status === 'active' || state.status === 'closing';
 }
 export function validateEvidence(post: Post, evidence: ReviewEvidence | undefined) {
+  if (post.tracking?.contentType === 'other')
+    throw new Error('Analytics identifies this video as non-Shorts content.');
+  if (post.tracking?.contentType === 'shorts_candidate' && !evidence?.shortsConfirmed)
+    throw new Error('Confirm this candidate is actually a YouTube Short using auditable evidence.');
   if (
     !evidence ||
     evidence.reference.trim().length < 10 ||
@@ -137,7 +167,14 @@ export function metricSamplingDecision(
   views: number
 ): string | null {
   const previous = data.snapshots
-    .filter((s) => s.post_id === post.id && s.source === 'api')
+    .filter(
+      (s) =>
+        s.post_id === post.id &&
+        s.source === 'api' &&
+        s.metric !== 'paid_views' &&
+        s.provenance?.kind !== 'daily' &&
+        !s.provenance?.supporting
+    )
     .sort((a, b) => a.observed_at.localeCompare(b.observed_at))
     .at(-1);
   const state = trackingState(data, post, now);

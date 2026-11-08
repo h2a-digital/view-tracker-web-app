@@ -9,7 +9,27 @@ export async function GET() {
     if (error)
       throw new Error('Operations monitoring unavailable. Check the production migration.');
     return NextResponse.json(
-      { ...data, configurationIssues: configurationIssues(process.env, true) },
+      {
+        ...data,
+        configurationIssues: configurationIssues(process.env, true),
+        integrations: {
+          youtubeConfigured: !!(
+            process.env.GOOGLE_CLIENT_ID &&
+            process.env.GOOGLE_CLIENT_SECRET &&
+            process.env.OAUTH_TOKEN_ENCRYPTION_KEY
+          ),
+          metaConfigured: !!(
+            process.env.META_APP_ID &&
+            process.env.META_APP_SECRET &&
+            process.env.META_GRAPH_VERSION &&
+            process.env.OAUTH_TOKEN_ENCRYPTION_KEY
+          ),
+          youtubeCompensationApproved: process.env.YOUTUBE_ANALYTICS_POLICY_APPROVED === 'true',
+          instagramOrganicDefinitionVerified:
+            process.env.INSTAGRAM_ORGANIC_VIEWS_VERIFIED === 'true',
+          facebookOrganicDefinitionVerified: process.env.FACEBOOK_ORGANIC_VIEWS_VERIFIED === 'true',
+        },
+      },
       { headers: { 'Cache-Control': 'no-store' } }
     );
   } catch (error) {

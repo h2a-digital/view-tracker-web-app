@@ -62,7 +62,6 @@ export function configurationIssues(env: Environment = process.env, worker = fal
     }
   }
   if (worker) {
-    if (!env.ZERNIO_API_KEY) issues.push('ZERNIO_API_KEY is required');
     if (!env.CRON_SECRET || env.CRON_SECRET.length < 32 || /\s/.test(env.CRON_SECRET))
       issues.push('CRON_SECRET must contain at least 32 characters without whitespace');
   }

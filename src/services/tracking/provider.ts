@@ -1,18 +1,23 @@
-import type { Platform } from '@/domain/model';
+import type { Platform, MetricProvenance, SocialAccount } from '@/domain/model';
 export type DiscoveredPost = {
   platformPostId: string;
   url: string;
   caption: string;
   publishedAt: string;
+  contentType?: MetricProvenance['contentType'];
 };
 export type MetricObservation = {
   platformPostId: string;
   views: number;
-  metric: 'public_views' | 'organic_views';
+  metric: 'public_views' | 'organic_views' | 'paid_views' | 'uncertain_views';
+  provenance?: MetricProvenance;
   providerUpdatedAt: string | null;
   organicVerified: boolean;
 };
+export type MetricTarget = { platformPostId: string; publishedAt: string; deadline: string | null };
 export interface TrackingProvider {
+  diagnosticErrors?(): string[];
+  accountPatch?(): Partial<SocialAccount['integration']>;
   readonly name: string;
   capabilities(): {
     discovery: boolean;
@@ -21,5 +26,9 @@ export interface TrackingProvider {
     platforms: Platform[];
   };
   discoverPosts(accountId: string, fromDate?: string): Promise<DiscoveredPost[]>;
-  fetchMetrics(accountId: string, fromDate?: string): Promise<MetricObservation[]>;
+  fetchMetrics(
+    accountId: string,
+    fromDate?: string,
+    targets?: MetricTarget[]
+  ): Promise<MetricObservation[]>;
 }

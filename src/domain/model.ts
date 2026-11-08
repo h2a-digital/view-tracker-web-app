@@ -39,7 +39,15 @@ export type SocialAccount = {
   platform: Platform;
   username: string;
   ownership: 'company' | 'creator';
-  provider: 'manual' | 'zernio';
+  provider: 'manual' | 'zernio' | 'direct';
+  integration?: {
+    sourceErasedAt?: string;
+    payoutsBlocked?: boolean;
+    policyReason?: string;
+    lastAnalyticsAt?: string | null;
+    retryAfterAt?: string | null;
+    tokenExpiresAt?: string | null;
+  } | null;
   provider_account_id: string | null;
   provider_profile_id: string | null;
   status: 'registered' | 'connected' | 'attention' | 'disconnected';
@@ -64,6 +72,7 @@ export type RuleVersion = {
   created_at: string;
 };
 export type Post = {
+  source_erased_at?: string | null;
   id: string;
   account_id: string;
   platform: Platform;
@@ -90,7 +99,8 @@ export type Snapshot = {
   id: string;
   post_id: string;
   views: number;
-  metric: 'public_views' | 'organic_views';
+  metric: 'public_views' | 'organic_views' | 'paid_views' | 'uncertain_views';
+  provenance?: MetricProvenance | null;
   source: 'manual' | 'csv' | 'api';
   observed_at: string;
   provider_updated_at: string | null;
@@ -101,11 +111,12 @@ export type Snapshot = {
 export type PayoutLine = {
   postId: string;
   campaignId: string;
-  views: number;
+  views: number | null;
   baseCents: number;
   bonusCents: number;
 };
 export type Statement = {
+  source_redacted_at?: string | null;
   id: string;
   app_id: string;
   creator_id: string;
@@ -127,10 +138,11 @@ export type Statement = {
   payment_amount_cents: number | null;
 };
 export type Adjustment = {
+  source_redacted_at?: string | null;
   id: string;
   statement_id: string;
   post_id: string;
-  eligible_views: number;
+  eligible_views: number | null;
   proposed_cents: number;
   evidence?: ReviewEvidence | null;
   status: 'pending' | 'approved' | 'rejected' | 'paid';
@@ -202,7 +214,20 @@ export function emptyData(): DashboardData {
   };
 }
 
+export type MetricProvenance = {
+  kind: 'cumulative' | 'daily';
+  supporting?: boolean;
+  metricName: string;
+  periodStart?: string;
+  periodEnd?: string;
+  timezone?: string;
+  scope: string;
+  apiVersion?: string;
+  contentType?: 'shorts' | 'shorts_candidate' | 'other' | 'reel';
+};
+
 export type ReviewEvidence = {
+  shortsConfirmed?: boolean;
   reference: string;
   windowStart: string;
   windowEnd: string;
@@ -210,6 +235,7 @@ export type ReviewEvidence = {
   cutoffConfirmed: boolean;
 };
 export type TrackingState = {
+  contentType?: MetricProvenance['contentType'];
   status: 'active' | 'closing' | 'complete' | 'review';
   issues: string[];
   firstSeenAt: string;

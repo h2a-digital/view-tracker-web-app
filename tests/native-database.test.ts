@@ -84,6 +84,49 @@ it.skipIf(!socket)(
           "select has_function_privilege('anon','public.get_operations_status()','EXECUTE'),has_function_privilege('authenticated','public.record_worker_invocation(uuid,text,text,integer,integer,text)','EXECUTE'),has_function_privilege('service_role','public.commit_tracking_job(uuid,uuid,bigint,jsonb,boolean,text)','EXECUTE');"
         ).trim()
       ).toBe('f|f|t');
+      sql(readFileSync('supabase/migrations/202611080003_direct_integrations.sql', 'utf8'));
+      const direct = JSON.parse(
+        sql('set role service_role;select public.read_dashboard();').trim()
+      );
+      expect(direct.schemaVersion).toBe(4);
+      expect(direct.data.statements).toEqual(production.data.statements);
+      expect(direct.data.accounts[0].provider).toBe(production.data.accounts[0].provider);
+      expect(
+        sql(
+          "select has_function_privilege('anon','public.read_direct_credentials(uuid)','EXECUTE'),has_function_privilege('authenticated','public.read_oauth_flow(text)','EXECUTE');"
+        ).trim()
+      ).toBe('f|f');
+      sql(readFileSync('supabase/migrations/202611080004_provider_lifecycle.sql', 'utf8'));
+      const lifecycle = JSON.parse(
+        sql('set role service_role;select public.read_dashboard();').trim()
+      );
+      expect(lifecycle.schemaVersion).toBe(5);
+      expect(lifecycle.data.statements[0].payable_cents).toBe(
+        direct.data.statements[0].payable_cents
+      );
+      expect(lifecycle.data.snapshots).toEqual(direct.data.snapshots);
+      sql(
+        'set role service_role;select public.sweep_provider_retention();select public.lease_source_check();select public.lease_provider_revocation();select public.get_operations_status();'
+      );
+      const nativeDirect = populatedDocument();
+      nativeDirect.accounts[0].provider = 'direct';
+      nativeDirect.accounts[0].platform = 'youtube';
+      nativeDirect.posts[0].platform = 'youtube';
+      nativeDirect.posts[0].caption = 'source-to-erase';
+      const directLiteral = JSON.stringify(nativeDirect).replaceAll("'", "''");
+      sql(
+        `set role service_role;select public.commit_dashboard(${lifecycle.revision},'${directLiteral}'::jsonb);select public.erase_direct_account('${nativeDirect.accounts[0].id}','native-receipt');`
+      );
+      const erasedNative = JSON.parse(
+        sql('set role service_role;select public.read_dashboard();').trim()
+      );
+      expect(JSON.stringify(erasedNative)).not.toContain('source-to-erase');
+      expect(erasedNative.data.snapshots).toHaveLength(direct.data.snapshots.length);
+      expect(
+        erasedNative.data.statements.find(
+          (s: { id: string }) => s.id === nativeDirect.statements[0].id
+        ).payable_cents
+      ).toBe(nativeDirect.statements[0].payable_cents);
     } finally {
       sql(`drop database ${database};`, 'postgres');
     }

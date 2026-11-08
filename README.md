@@ -4,9 +4,13 @@ Private UGC operations dashboard for multiple apps. Next.js App Router, React, T
 
 ## Deploy the existing project
 
-Follow [the Netlify Free + Supabase Cron deployment guide](docs/production-deployment.md). It lists all production environment variables, the existing **202611080002_production_operations.sql** operations migration (only if not already applied), Vault/Cron setup, HTTPS OAuth configuration, monitoring and cost constraints. Do not reset the existing database or rerun earlier migrations. Production deployment and live SQL changes remain manual.
+Follow [the Netlify Free + Supabase Cron deployment guide](docs/production-deployment.md). It lists all production environment variables, incremental migrations up to schema 5 (apply only missing versions), Vault/Cron setup, HTTPS OAuth configuration, monitoring and cost constraints. Do not reset the existing database or rerun earlier migrations. Production deployment and live SQL changes remain manual.
 
 The repository is public and organization-owned; Netlify Free supports that Git integration. See the [repository and Git history security audit](docs/repository-security-audit.md) for audit scope, exposure findings and credential rotation guidance.
+
+## Direct platform integrations
+
+YouTube Shorts candidates, Instagram professional accounts linked to Pages, and Facebook Page Reels now have direct read-only OAuth/provider adapters. TikTok stays on Zernio. Follow [Google/Meta setup and production gates](docs/direct-integrations.md), including the **202611080003_direct_integrations.sql** incremental migration from schema 3 to 4, followed by **202611080004_provider_lifecycle.sql** to schema 5. Do not activate external OAuth apps until permissions, metric definitions, policy approval and retention/deletion obligations are resolved.
 
 ## Run locally
 
@@ -35,18 +39,18 @@ Tests cover payout arithmetic, rule versioning, publication-month boundaries, el
 - Configurable versioned app → campaign → creator/app → creator/campaign compensation. Flat or progressive CPM, fixed qualifying payments, tracking windows, app/creator monthly caps and optional bonus approval.
 - Publication-month statements, partial bonus approvals/rejections, cap allocation to posts/campaigns, finalization, external-payment records, exports and separately approved linked corrections/recoveries.
 - Zernio TikTok connection, disconnect, scheduled discovery and public metrics. Server-held API keys, one-use connection tickets, authorization verification, a free-tier connection guard, job leases and backoff.
-- Instagram, YouTube and Facebook are supported throughout data entry, accounting and CSV imports. **Their automated adapters are not implemented in this initial TikTok pilot.** Facebook is excluded from Versel's bonus by default.
+- Instagram, YouTube and Facebook are supported throughout data entry, accounting and CSV imports. **Direct automated adapters require Google/Meta configuration and the production gates in the integration guide.** Facebook is excluded from Versel's bonus by default.
 
 ## Upgrade an existing live project
 
-The live pilot has already applied `202611080001_tracking_and_new_york.sql`. Follow the [production deployment guide](docs/production-deployment.md): stop old workers, apply **only `202611080002_production_operations.sql` once if the schema is still version 2** (skip it at version 3), deploy the current app, and configure Supabase Cron. The current app requires schema version 3. No migration resets or disconnects accounts, deletes snapshots, or rewrites finalized payouts. Do not rerun earlier migrations or run test fixtures against Supabase.
+The live pilot has already applied `202611080001_tracking_and_new_york.sql`. Follow the [production deployment guide](docs/production-deployment.md): stop old workers, apply **only `202611080002_production_operations.sql` once if the schema is still version 2** (skip it at version 3), deploy the current app, and configure Supabase Cron. The current app requires schema version 5; after the operations upgrade apply the direct integrations migration once as documented in the integration guide. No migration resets or disconnects accounts, deletes snapshots, or rewrites finalized payouts. Do not rerun earlier migrations or run test fixtures against Supabase.
 
 For a database that has not yet applied the tracking/New York upgrade, first follow [the tracking upgrade notes](docs/tracking-upgrade.md), then apply the operations migration. That earlier migration can abort if timezone conversion would affect existing statements; preserve the database and review the payout transition rather than deleting/recreating records. Historical imports do not manufacture seven-day history, and existing accepted posts without structured evidence require review before finalization.
 
 ## Dedicated Supabase setup
 
 1. Create a **new free project**. Do not reuse the imported app's Supabase project. No deployment or paid account has been created by this implementation.
-2. For a genuinely new database only, run `supabase/migrations/202611070001_ugc.sql` once, followed by `supabase/migrations/202611080001_tracking_and_new_york.sql` and `supabase/migrations/202611080002_production_operations.sql`, each once in that order. Run the complete file as the SQL Editor’s `postgres` role; it is a one-time initial migration wrapped in a transaction. It creates normalized tables, private job/connection tables, RLS policies, server-only transactional RPCs, indexes and initial Versel defaults. It installs `pg_cron` in `pg_catalog` and `pg_net` in `extensions`; enable Cron/pg_net in Integrations first if your project requires that. `pgcrypto` is not required because UUID generation uses PostgreSQL’s built-in function.
+2. For a genuinely new database only, run `supabase/migrations/202611070001_ugc.sql` once, followed by `supabase/migrations/202611080001_tracking_and_new_york.sql`, `supabase/migrations/202611080002_production_operations.sql` `supabase/migrations/202611080003_direct_integrations.sql` and `supabase/migrations/202611080004_provider_lifecycle.sql`, each once in that order. Run the complete file as the SQL Editor’s `postgres` role; it is a one-time initial migration wrapped in a transaction. It creates normalized tables, private job/connection tables, RLS policies, server-only transactional RPCs, indexes and initial Versel defaults. It installs `pg_cron` in `pg_catalog` and `pg_net` in `extensions`; enable Cron/pg_net in Integrations first if your project requires that. `pgcrypto` is not required because UUID generation uses PostgreSQL’s built-in function.
 3. In Authentication settings disable **Allow new users to sign up**. Create the single administrator with a strong password through the Supabase dashboard (email confirmed). No client service-role key is needed or allowed.
 4. Add that user's UUID in SQL Editor:
 
@@ -74,7 +78,7 @@ Provider requests are confined to profiles, accounts, OAuth connect, external po
 
 ## Background worker
 
-`POST /api/internal/jobs` requires `Authorization: Bearer CRON_SECRET` and leases one account job. It enqueues accounts due at least hourly. Discovery runs each sync; counters are sampled daily, with hourly attempts during the last six eligibility hours and one closing reading. Daily snapshots retain the original provider freshness, even when a cached counter has not changed. Repeated cached closing readings are diagnosed without adding duplicate snapshots; hourly polling continues within the bounded grace period. Missing/stale counters are exceptions even when the HTTP request succeeds. A job has a provider deadline 45 seconds from handler entry within a 60-second synchronous route, a 3-minute lease and exponential backoff. At most 40 analytics pages (4,000 posts) are read per account; exceeding the budget is flagged rather than silently reporting complete history. This is sufficient for the two-account pilot but must become a cursor-based incremental worker before large-scale backfills.
+`POST /api/internal/jobs` requires `Authorization: Bearer CRON_SECRET` and processes up to eight leased account jobs within its shared deadline, after bounded provider lifecycle maintenance. It enqueues accounts due at least hourly. Discovery runs each sync; counters are sampled daily, with hourly attempts during the last six eligibility hours and one closing reading. Daily snapshots retain the original provider freshness, even when a cached counter has not changed. Repeated cached closing readings are diagnosed without adding duplicate snapshots; hourly polling continues within the bounded grace period. Missing/stale counters are exceptions even when the HTTP request succeeds. A job has a provider deadline 45 seconds from handler entry within a 60-second synchronous route, a 3-minute lease and exponential backoff. At most 40 analytics pages (4,000 posts) are read per account; exceeding the budget is flagged rather than silently reporting complete history. This is sufficient for the two-account pilot but must become a cursor-based incremental worker before large-scale backfills.
 
 For development, call the endpoint with a secret read from your local environment, keeping it out of shell history/logs. Use a scheduled external HTTP caller or Supabase Cron in production. Nothing is scheduled automatically by the migration.
 
@@ -123,3 +127,5 @@ The imported app's App Router/TypeScript/Tailwind structure and path aliases rem
 ## Remaining live prerequisites
 
 The existing dedicated Supabase project, administrator and Free Zernio connection are reused. Remaining production steps: Netlify Free hosting configured by the administrator, canonical HTTPS domain, production environment variables, the existing operations migration if not already applied, and Supabase Vault/Cron configuration. No service was purchased or deployed and no live database was changed during deployment preparation. Passing local tests does not establish production uptime, provider entitlement, organic verification or historical API completeness.
+
+Direct-provider source lifecycle, revocation/deletion callbacks, retention safeguards and the exact safe cutover order are documented in [the production rollout checklist](docs/production-rollout.md). No live migrations or deployment have been performed.

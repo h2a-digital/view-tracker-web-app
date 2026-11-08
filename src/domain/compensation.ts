@@ -153,7 +153,12 @@ export function calculateStatement(
         publicationMonth(p.published_at) === month
     )
     .sort((a, b) => a.published_at.localeCompare(b.published_at) || a.id.localeCompare(b.id));
-  const accepted = posts.filter((p) => p.eligibility_status === 'accepted' && p.campaign_id);
+  const accepted = posts.filter(
+    (p) =>
+      p.eligibility_status === 'accepted' &&
+      p.campaign_id &&
+      !data.accounts.find((a) => a.id === p.account_id)?.integration?.payoutsBlocked
+  );
   const views = accepted.map((p) =>
     policy.bonusPlatforms.includes(p.platform) ? (p.eligible_views ?? 0) : 0
   );

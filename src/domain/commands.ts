@@ -81,6 +81,8 @@ function addPost(
   now: string
 ) {
   const account = requireValue(data.accounts.find((a) => a.id === input.accountId));
+  if (account.integration?.sourceErasedAt)
+    throw new Error('Register a new account after source erasure.');
   const host = new URL(input.url).hostname.replace(/^www\./, '');
   const hosts = {
     tiktok: ['tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com'],
@@ -201,6 +203,7 @@ export function appendObservation(
   snapshot: Snapshot,
   now: string
 ) {
+  if (post.source_erased_at) throw new Error('Erased source cannot receive observations.');
   if (snapshot.observed_at < post.published_at || snapshot.observed_at > now)
     throw new Error('Observation time must be between publication and now.');
   if (snapshot.provider_updated_at && snapshot.provider_updated_at > snapshot.observed_at)
@@ -212,7 +215,9 @@ export function appendObservation(
         s.source === snapshot.source &&
         s.metric === snapshot.metric &&
         s.observed_at === snapshot.observed_at &&
-        s.views === snapshot.views
+        s.views === snapshot.views &&
+        s.provenance?.metricName === snapshot.provenance?.metricName &&
+        s.provenance?.periodStart === snapshot.provenance?.periodStart
     )
   )
     return;
@@ -333,6 +338,14 @@ export function runCommand(
       break;
     }
     case 'registerAccount': {
+      if (command.provider === 'direct' && command.platform === 'tiktok')
+        throw new Error('TikTok continues to use Zernio.');
+      if (
+        command.provider === 'direct' &&
+        command.platform === 'facebook' &&
+        !/^\d+$/.test(command.username)
+      )
+        throw new Error('Enter the numeric Facebook Page ID for direct tracking.');
       if (command.provider === 'zernio' && command.platform !== 'tiktok')
         throw new Error(
           'This pilot supports Zernio for TikTok only. Select manual / CSV for this platform.'
@@ -482,9 +495,19 @@ export function runCommand(
         throw new Error('Assign the post to a campaign before reviewing it.');
       if (command.decision === 'accepted' && p.deadline! > now)
         throw new Error('Wait for the eligibility window to close before accepting final views.');
-      if (command.decision === 'accepted') validateEvidence(p, command.evidence);
+      if (command.decision === 'accepted') {
+        if (p.source_erased_at)
+          throw new Error('Erased source cannot support a correction or approval.');
+        if (data.accounts.find((a) => a.id === p.account_id)?.integration?.payoutsBlocked)
+          throw new Error(
+            'This integration is blocked from compensation pending provider policy approval.'
+          );
+        validateEvidence(p, command.evidence);
+      }
       const highest = data.snapshots
-        .filter((s) => s.post_id === p.id)
+        .filter(
+          (s) => s.post_id === p.id && s.metric !== 'paid_views' && s.provenance?.kind !== 'daily'
+        )
         .reduce((v, s) => Math.max(v, s.views), 0);
       if (command.decision === 'accepted' && command.eligibleViews > highest)
         throw new Error(
@@ -597,6 +620,21 @@ export function runCommand(
       break;
     }
     case 'finalizeStatement': {
+      const target = data.statements.find((s) => s.id === command.statementId);
+      if (
+        target?.status === 'draft' &&
+        data.posts.some(
+          (p) =>
+            p.app_id === target.app_id &&
+            p.creator_id === target.creator_id &&
+            publicationMonth(p.published_at) === target.month &&
+            p.eligibility_status !== 'excluded' &&
+            data.accounts.find((a) => a.id === p.account_id)?.integration?.payoutsBlocked
+        )
+      )
+        throw new Error(
+          'Resolve provider policy approval or exclude the affected posts before finalizing.'
+        );
       const s = requireValue(data.statements.find((s) => s.id === command.statementId));
       if (s.status !== 'draft') {
         entityId = s.id;
@@ -664,6 +702,8 @@ export function runCommand(
       const s = requireValue(
         data.statements.find((s) => s.id === command.statementId && s.status !== 'draft')
       );
+      if (s.source_redacted_at)
+        throw new Error('Source details were erased; this statement cannot be recalculated.');
       const p = requireValue(
         data.posts.find(
           (p) =>
@@ -675,9 +715,15 @@ export function runCommand(
       );
       if (data.adjustments.some((a) => a.statement_id === s.id && a.status === 'pending'))
         throw new Error('Resolve the existing pending correction first.');
+      if (p.source_erased_at)
+        throw new Error('Erased source cannot support a correction or approval.');
+      if (data.accounts.find((a) => a.id === p.account_id)?.integration?.payoutsBlocked)
+        throw new Error('Provider policy approval required before a correction.');
       validateEvidence(p, command.evidence);
       const highest = data.snapshots
-        .filter((x) => x.post_id === p.id)
+        .filter(
+          (x) => x.post_id === p.id && x.metric !== 'paid_views' && x.provenance?.kind !== 'daily'
+        )
         .reduce((n, x) => Math.max(n, x.views), 0);
       if (command.eligibleViews > highest)
         throw new Error(
@@ -742,6 +788,8 @@ export function runCommand(
       const a = requireValue(
         data.adjustments.find((a) => a.id === command.adjustmentId && a.status === 'pending')
       );
+      if (a.source_redacted_at && command.approve)
+        throw new Error('Erased evidence cannot be approved.');
       a.status = command.approve ? 'approved' : 'rejected';
       entityId = a.id;
       break;

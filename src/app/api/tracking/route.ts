@@ -10,10 +10,10 @@ export async function POST(request: Request) {
     const { data } = await loadDashboard();
     if (
       !data.accounts.some(
-        (a) => a.id === accountId && a.status === 'connected' && a.provider === 'zernio'
+        (a) => a.id === accountId && a.status === 'connected' && a.provider !== 'manual'
       )
     )
-      throw new Error('Connect a Zernio account first.');
+      throw new Error('Connect an automated account first.');
     const { error } = await adminDatabase().rpc('request_tracking', { target_account: accountId });
     if (error) throw new Error('Could not queue synchronization.');
     return NextResponse.json({

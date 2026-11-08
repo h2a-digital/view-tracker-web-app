@@ -56,11 +56,14 @@ export async function synchronizeAccount(
       diagnostics.observations.push({ postId, outcome, views, providerAt });
   };
   const open = data.posts.filter(
-    (p) => p.account_id === accountId && needsMetricPolling(trackingState(data, p, startedAt))
+    (p) =>
+      !p.source_erased_at &&
+      p.account_id === accountId &&
+      needsMetricPolling(trackingState(data, p, startedAt))
   );
   const overlap = account.last_synced_at
     ? new Date(new Date(account.last_synced_at).getTime() - 2 * 86400000).toISOString()
-    : new Date(Date.now() - 365 * 86400000).toISOString();
+    : new Date(Date.now() - (account.provider === 'direct' ? 30 : 365) * 86400000).toISOString();
   const earliest = [overlap, ...open.map((p) => p.published_at)].sort()[0];
   const fromDate = (
     earliest < new Date(Date.now() - 365 * 86400000).toISOString()
@@ -102,6 +105,14 @@ export async function synchronizeAccount(
           'tracking worker'
         );
         diagnostics.newPosts += data.posts.length - count;
+        const created = data.posts.find(
+          (p) => p.account_id === accountId && p.platform_post_id === post.platformPostId
+        );
+        if (created && post.contentType)
+          created.tracking = {
+            ...trackingState(data, created, startedAt),
+            contentType: post.contentType,
+          };
       } catch (error) {
         diagnostics.errors.push(
           `Post ${post.platformPostId}: ${error instanceof Error ? error.message : 'Invalid metadata.'}`
@@ -114,6 +125,7 @@ export async function synchronizeAccount(
     );
   }
   const seen = new Set<string>();
+  const requested = new Set<string>();
   try {
     // Discovery can reveal a video older than the normal overlap but still inside
     // its eligibility/closing window. Include it immediately, before this job exits.
@@ -123,23 +135,65 @@ export async function synchronizeAccount(
       fromDate,
       ...data.posts
         .filter(
-          (p) => p.account_id === accountId && needsMetricPolling(trackingState(data, p, metricNow))
+          (p) =>
+            !p.source_erased_at &&
+            p.account_id === accountId &&
+            needsMetricPolling(trackingState(data, p, metricNow))
         )
         .map((p) => p.published_at.slice(0, 10)),
     ].sort()[0];
     const metricFromDate = oldestMetricDate < metricFloor ? metricFloor : oldestMetricDate;
-    const observations = await provider.fetchMetrics(account.provider_account_id, metricFromDate);
+    const targets = data.posts
+      .filter((p) => p.account_id === accountId && !p.source_erased_at)
+      .filter((p) => {
+        const history = data.snapshots
+          .filter(
+            (s) =>
+              s.post_id === p.id &&
+              s.source === 'api' &&
+              s.provenance?.kind !== 'daily' &&
+              s.metric !== 'paid_views' &&
+              !s.provenance?.supporting
+          )
+          .sort((a, b) => a.observed_at.localeCompare(b.observed_at));
+        const previous = history.at(-1);
+        const polling = needsMetricPolling(trackingState(data, p, metricNow));
+        // Attempt a historical initial counter once; missing counters must not
+        // keep a closed-window video in hourly metric requests indefinitely.
+        if (!previous) return polling || !p.tracking?.lastAttemptAt;
+        if (!polling) return false;
+        const age = Date.parse(metricNow) - Date.parse(previous.observed_at);
+        return (
+          age >= 86400000 ||
+          (!!p.deadline &&
+            Date.parse(p.deadline) - Date.parse(metricNow) <= 6 * 3600000 &&
+            age >=
+              (Date.parse(metricNow) - Date.parse(p.deadline) > 24 * 3600000 ? 6 : 1) * 3600000)
+        );
+      })
+      .map((p) => ({
+        platformPostId: p.platform_post_id,
+        publishedAt: p.published_at,
+        deadline: p.deadline,
+      }));
+    for (const target of targets) requested.add(target.platformPostId);
+    const observations = await provider.fetchMetrics(
+      account.provider_account_id,
+      metricFromDate,
+      targets
+    );
     diagnostics.countersFetched = observations.length;
     const unique = new Map<string, (typeof observations)[number]>();
     for (const o of observations) {
-      const prior = unique.get(o.platformPostId);
+      const key = `${o.platformPostId}:${o.metric}:${o.provenance?.metricName ?? ''}:${o.provenance?.periodStart ?? ''}`;
+      const prior = unique.get(key);
       if (
         !prior ||
         (o.providerUpdatedAt &&
           (!prior.providerUpdatedAt ||
             Date.parse(o.providerUpdatedAt) >= Date.parse(prior.providerUpdatedAt)))
       )
-        unique.set(o.platformPostId, o);
+        unique.set(key, o);
     }
     for (let duplicate = observations.length - unique.size; duplicate > 0; duplicate--)
       skip('duplicate_counter');
@@ -149,6 +203,65 @@ export async function synchronizeAccount(
       );
       if (!post) {
         skip('post_not_found');
+        continue;
+      }
+      const supporting =
+        observation.metric === 'paid_views' ||
+        observation.provenance?.kind === 'daily' ||
+        observation.provenance?.supporting;
+      if (
+        observation.provenance?.contentType &&
+        observation.provenance.contentType !== 'shorts_candidate'
+      )
+        post.tracking = {
+          ...trackingState(data, post, new Date().toISOString()),
+          contentType: observation.provenance.contentType,
+        };
+      if (supporting) {
+        const prior = data.snapshots
+          .filter(
+            (s) =>
+              s.post_id === post.id &&
+              s.provider === provider.name &&
+              s.metric === observation.metric &&
+              s.provenance?.metricName === observation.provenance?.metricName &&
+              s.provenance?.periodStart === observation.provenance?.periodStart
+          )
+          .at(-1);
+        if (prior?.views === observation.views) {
+          skip('unchanged_supporting_metric');
+          continue;
+        }
+        const observedAt = new Date().toISOString();
+        if (!Number.isSafeInteger(observation.views) || observation.views < 0) {
+          skip('invalid_counter');
+          diagnostics.errors.push('Supporting metric has an invalid counter.');
+          continue;
+        }
+        if (observation.provenance?.periodEnd && observation.provenance.periodEnd > observedAt) {
+          skip('incomplete_reporting_period');
+          continue;
+        }
+        appendObservation(
+          data,
+          post,
+          {
+            id: crypto.randomUUID(),
+            post_id: post.id,
+            views: observation.views,
+            metric: observation.metric,
+            source: 'api',
+            provider: provider.name,
+            observed_at: observedAt,
+            provider_updated_at: null,
+            evidence: null,
+            quality: 'uncertain',
+            provenance: observation.provenance,
+          },
+          observedAt
+        );
+        diagnostics.snapshotsSaved++;
+        event(post.id, 'saved_supporting_metric', observation.views, null);
         continue;
       }
       if (seen.has(post.id)) {
@@ -195,6 +308,7 @@ export async function synchronizeAccount(
               provider_updated_at: timestamp,
               evidence: null,
               quality: observation.organicVerified ? 'reported' : 'uncertain',
+              provenance: observation.provenance ?? null,
             },
             now
           );
@@ -236,10 +350,15 @@ export async function synchronizeAccount(
     );
   }
   const now = new Date().toISOString();
-  for (const p of data.posts.filter((p) => p.account_id === accountId)) {
+  for (const p of data.posts.filter((p) => p.account_id === accountId && !p.source_erased_at)) {
     p.tracking = trackingState(data, p, now);
-    p.tracking.lastAttemptAt = now;
-    if (!seen.has(p.id) && needsMetricPolling(p.tracking)) {
+    if (account.provider !== 'direct' || requested.has(p.platform_post_id))
+      p.tracking.lastAttemptAt = now;
+    if (
+      !seen.has(p.id) &&
+      needsMetricPolling(p.tracking) &&
+      (account.provider !== 'direct' || requested.has(p.platform_post_id))
+    ) {
       diagnostics.missingCounters++;
       p.tracking.lastError = diagnostics.errors.length
         ? 'Refresh failed; retry pending.'
@@ -283,9 +402,15 @@ export async function synchronizeAccount(
     }
   refreshDrafts(data);
   const a = data.accounts.find((a) => a.id === accountId)!;
+  if (provider.diagnosticErrors) diagnostics.errors.push(...provider.diagnosticErrors());
   a.last_synced_at = now;
+  if (provider.accountPatch) a.integration = { ...a.integration, ...provider.accountPatch() };
   a.error = diagnostics.errors.length ? diagnostics.errors.join(' ').slice(0, 2000) : null;
-  if (a.error?.includes('authorization needs attention')) a.status = 'attention';
+  if (
+    a.error?.includes('authorization needs attention') ||
+    a.error?.includes('API approval is missing')
+  )
+    a.status = 'attention';
   const run = data.syncRuns.find((r) => r.id === runId)!;
   run.status = diagnostics.errors.length ? 'failed' : 'success';
   run.finished_at = now;

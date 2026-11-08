@@ -4,6 +4,7 @@ import { requireAdmin, requireSameOrigin, adminDatabase } from '@/lib/server/sup
 import { configuration } from '@/lib/server/config';
 import { loadDashboard, saveDashboard } from '@/repositories/dashboard';
 import { remoteId, ZernioProvider } from '@/services/tracking/zernio';
+import { directConnectionAction } from '@/services/oauth/flow';
 import { apiError } from '@/lib/server/http';
 export async function POST(request: Request) {
   try {
@@ -12,6 +13,8 @@ export async function POST(request: Request) {
     const { accountId, action } = await request.json();
     const { data, revision } = await loadDashboard();
     const account = data.accounts.find((a) => a.id === accountId);
+    if (account?.provider === 'direct')
+      return await directConnectionAction(account, data, revision, action);
     if (!account || account.platform !== 'tiktok' || account.provider !== 'zernio')
       throw new Error('Select a registered TikTok account using Zernio.');
     const provider = new ZernioProvider();

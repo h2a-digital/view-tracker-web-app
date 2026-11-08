@@ -356,5 +356,9 @@ it('refreshes a newly discovered older video during the same job while its windo
   expect(d.syncRuns[0].diagnostics?.newPosts).toBe(1);
   expect(d.syncRuns[0].diagnostics?.countersFetched).toBe(1);
   expect(d.snapshots).toHaveLength(1);
-  expect(p.fetchMetrics).toHaveBeenCalledWith('remote', '2026-10-31');
+  expect(p.fetchMetrics).toHaveBeenCalledWith(
+    'remote',
+    '2026-10-31',
+    expect.arrayContaining([expect.objectContaining({ platformPostId: '123456789' })])
+  );
 });

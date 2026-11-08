@@ -34,7 +34,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import Papa from 'papaparse';
-import type { DashboardData, Post, Statement } from '@/domain/model';
+import type { DashboardData, Post, Statement, Snapshot } from '@/domain/model';
 import { platforms } from '@/domain/model';
 import { runCommand } from '@/domain/commands';
 import {
@@ -62,7 +62,13 @@ const iso = (value: string) => instant(value);
 const option = (value: string, label: string) => ({ value, label });
 const latest = (d: DashboardData, p: Post) =>
   d.snapshots
-    .filter((s) => s.post_id === p.id)
+    .filter(
+      (s) =>
+        s.post_id === p.id &&
+        s.metric !== 'paid_views' &&
+        s.provenance?.kind !== 'daily' &&
+        !s.provenance?.supporting
+    )
     .sort((a, b) => b.observed_at.localeCompare(a.observed_at))[0];
 function download(name: string, rows: Record<string, unknown>[]) {
   const url = URL.createObjectURL(
@@ -137,7 +143,15 @@ export function Dashboard({
       !['accepted', 'excluded'].includes(p.eligibility_status) &&
       (state.status !== 'active' ||
         state.issues.some((i) =>
-          ['campaign_unassigned', 'counter_missing', 'provider_stale', 'refresh_failed'].includes(i)
+          [
+            'campaign_unassigned',
+            'counter_missing',
+            'provider_stale',
+            'refresh_failed',
+            'provider_policy_blocked',
+            'shorts_classification_unverified',
+            'not_a_short',
+          ].includes(i)
         ))
     );
   });
@@ -148,10 +162,11 @@ export function Dashboard({
       !a.last_synced_at ||
       new Date(a.last_synced_at).getTime() < mountedAt - 86400000
   );
-  const publicViews = posts.reduce(
-    (sum, p) => sum + (p.tracking?.lastViews ?? latest(data, p)?.views ?? 0),
-    0
-  );
+  const aggregateViews = (p: Post) =>
+    data.accounts.find((a) => a.id === p.account_id)?.integration?.payoutsBlocked
+      ? 0
+      : (p.tracking?.lastViews ?? latest(data, p)?.views ?? 0);
+  const publicViews = posts.reduce((sum, p) => sum + aggregateViews(p), 0);
   const eligibleViews = posts.reduce((sum, p) => sum + (p.eligible_views || 0), 0);
   const selectedApp = appId === 'all' ? data.apps[0]?.id : appId;
   async function execute(command: Command, close = true) {
@@ -178,10 +193,10 @@ export function Dashboard({
       setError(e instanceof Error ? e.message : 'Action failed.');
     }
   }
-  async function connection(id: string, action: 'connect' | 'disconnect') {
+  async function connection(id: string, action: 'connect' | 'disconnect' | 'deletion-link') {
     if (preview) {
       setToast(
-        'Connections are disabled in preview. Create your free Zernio account during setup.'
+        'Connections are disabled in preview. Configure the relevant provider server credentials during setup.'
       );
       return;
     }
@@ -195,7 +210,7 @@ export function Dashboard({
       if (!r.ok) throw new Error(v.error);
       if (v.authUrl) {
         setConnectionUrl(v.authUrl);
-        open('authorization', 'Authorize TikTok tracking', id);
+        open('authorization', 'Authorize social account tracking', id);
         return;
       }
       await refresh();
@@ -292,7 +307,7 @@ export function Dashboard({
             : p.eligibility_status}
         </Badge>
       </td>
-      <td>{date(p.published_at)}</td>
+      <td>{p.source_erased_at ? 'Source erased' : date(p.published_at)}</td>
       <td>
         <ArrowUpRight size={16} />
       </td>
@@ -400,7 +415,10 @@ export function Dashboard({
             <div className="section-heading">
               <div>
                 <h2>Performance by platform</h2>
-                <p>Public totals are provisional until reviewed.</p>
+                <p>
+                  Totals are provisional. Policy-blocked YouTube accounts are omitted from aggregate
+                  figures.
+                </p>
               </div>
               <span className="subtle">{posts.length} posts</span>
             </div>
@@ -408,10 +426,7 @@ export function Dashboard({
               {platforms.map((platform) => {
                 const v = posts
                   .filter((p) => p.platform === platform)
-                  .reduce(
-                    (sum, p) => sum + (p.tracking?.lastViews ?? latest(data, p)?.views ?? 0),
-                    0
-                  );
+                  .reduce((sum, p) => sum + aggregateViews(p), 0);
                 return (
                   <div className="platform-bar-row" key={platform}>
                     <div>
@@ -636,9 +651,9 @@ export function Dashboard({
         <div className="info-box">
           <Link2 size={19} />
           <p>
-            Zernio’s free allowance is two connected accounts across all platforms. TikTok
-            automation is ready for a live pilot. Instagram, YouTube, and Facebook currently accept
-            manual observations and CSV imports.
+            TikTok uses Zernio’s two-account free allowance. YouTube, Instagram and Facebook use
+            direct read-only APIs. Provider credentials, approval and a verified metrics pilot are
+            required before production use.
           </p>
         </div>
         <div className="account-grid">
@@ -667,7 +682,13 @@ export function Dashboard({
               <dl>
                 <div>
                   <dt>Managed by</dt>
-                  <dd>{a.provider === 'zernio' ? 'Zernio' : 'Manual / CSV'}</dd>
+                  <dd>
+                    {a.provider === 'zernio'
+                      ? 'Zernio'
+                      : a.provider === 'direct'
+                        ? 'Official API'
+                        : 'Manual / CSV'}
+                  </dd>
                 </div>
                 <div>
                   <dt>Last sync</dt>
@@ -681,9 +702,25 @@ export function Dashboard({
                 </div>
               </dl>
               {a.error && <p className="form-error">{a.error}</p>}
+              {a.provider === 'direct' && a.status !== 'disconnected' && (
+                <button className="button soft" onClick={() => connection(a.id, 'deletion-link')}>
+                  Creator deletion link
+                </button>
+              )}
+              {a.provider === 'direct' && (
+                <p className="subtle">
+                  Disconnect deletes source data and revokes access. Other accounts sharing the
+                  provider grant may also disconnect.
+                </p>
+              )}
+              {a.integration?.payoutsBlocked && (
+                <p className="form-error">
+                  {a.integration.policyReason ||
+                    'Provider policy approval required before compensation.'}
+                </p>
+              )}
               <div className="button-group">
-                {a.provider === 'zernio' &&
-                  a.platform === 'tiktok' &&
+                {a.provider !== 'manual' &&
                   (a.status === 'connected' ? (
                     <>
                       <button className="button soft" onClick={() => sync(a.id)}>
@@ -699,7 +736,7 @@ export function Dashboard({
                     </>
                   ) : (
                     <button className="button soft" onClick={() => connection(a.id, 'connect')}>
-                      Connect TikTok
+                      Connect {a.platform}
                       <ExternalLink size={14} />
                     </button>
                   ))}
@@ -885,6 +922,8 @@ export function Dashboard({
             Statements use the post’s publication month in America/New_York. Finalize after
             month-end and all view windows close. Pay externally, then record the payment here.
             Unverified views stay out of payable totals.
+            {data.accounts.some((a) => a.provider === 'direct' && a.platform === 'youtube') &&
+              ' YouTube-based compensation is a company calculation, not approved or published by Google or YouTube.'}
           </p>
         </div>
         <section className="card">
@@ -1085,7 +1124,8 @@ export function Dashboard({
           </span>
           <h2>{p.caption || p.platform_post_id}</h2>
           <p>
-            {creatorName(p.creator_id)} · {date(p.published_at)}
+            {creatorName(p.creator_id)} ·{' '}
+            {p.source_erased_at ? 'Source erased' : date(p.published_at)}
           </p>
           <a href={p.url} target="_blank" rel="noreferrer" className="text-button">
             Open original post
@@ -1214,6 +1254,14 @@ export function Dashboard({
                   <td>
                     {s.source}
                     <small>
+                      {s.provenance && (
+                        <span>
+                          {s.provenance.metricName} · {s.provenance.scope} · {s.quality}
+                          {s.provenance.periodStart
+                            ? ` · ${formatTimestamp(s.provenance.periodStart)} – ${formatTimestamp(s.provenance.periodEnd!)}`
+                            : ''}
+                        </span>
+                      )}
                       {s.provider_updated_at
                         ? `Provider: ${formatTimestamp(s.provider_updated_at)}`
                         : 'Provider freshness unknown'}
@@ -1225,7 +1273,7 @@ export function Dashboard({
           </table>
         </div>
         <p className="subtle">
-          Snapshot history is append-only.{' '}
+          Snapshot history is append-only except for required provider source deletion/retention.{' '}
           {locked
             ? 'This publication month is locked. Corrections require a linked adjustment.'
             : ''}
@@ -1309,6 +1357,12 @@ export function Dashboard({
             </div>
           )}
         </dl>
+        {s.source_redacted_at && (
+          <p className="info-box">
+            Provider source details were erased. Settled company payment amounts and status are
+            preserved.
+          </p>
+        )}
         {s.bonus_note && <p className="info-box">{s.bonus_note}</p>}
         <div className="button-group">
           {s.status === 'draft' ? (
@@ -1334,7 +1388,7 @@ export function Dashboard({
               Mark as paid
             </button>
           ) : null}
-          {s.status !== 'draft' && (
+          {s.status !== 'draft' && !s.source_redacted_at && (
             <button
               className="button"
               onClick={() => open('adjustment', 'Record linked adjustment', s.id)}
@@ -1375,8 +1429,9 @@ export function Dashboard({
               </div>
               <p>{a.note}</p>
               <small>
-                Corrected eligible views: {number(a.eligible_views)}. Negative amounts are
-                recoveries; the original publication-month cap still applies.
+                Corrected eligible views:{' '}
+                {a.eligible_views === null ? 'Source erased' : number(a.eligible_views)}. Negative
+                amounts are recoveries; the original publication-month cap still applies.
               </small>
               <div className="button-group">
                 {a.status === 'pending' && (
@@ -1438,7 +1493,7 @@ export function Dashboard({
               {s.lines.map((l) => (
                 <tr key={l.postId}>
                   <td>{data.posts.find((p) => p.id === l.postId)?.caption || l.postId}</td>
-                  <td>{number(l.views)}</td>
+                  <td>{l.views === null ? 'Source erased' : number(l.views)}</td>
                   <td>
                     <Money cents={l.baseCents} />
                   </td>
@@ -1618,7 +1673,7 @@ export function Dashboard({
               'Platform',
               platforms.map((p) => option(p, p))
             ),
-            { name: 'username', label: 'Public username (without profile URL)' },
+            { name: 'username', label: 'Username, YouTube channel ID or Facebook numeric Page ID' },
             selectField('ownership', 'Account owner', [
               option('creator', 'Creator-owned'),
               option('company', 'Company-owned'),
@@ -1626,6 +1681,7 @@ export function Dashboard({
             selectField('provider', 'Tracking provider', [
               option('zernio', 'Zernio (TikTok pilot)'),
               option('manual', 'Manual / CSV'),
+              option('direct', 'Official API · YouTube / Instagram / Facebook'),
             ]),
           ],
           (v) => ({
@@ -1634,7 +1690,7 @@ export function Dashboard({
             platform: v.platform as Post['platform'],
             username: v.username,
             ownership: v.ownership as 'creator' | 'company',
-            provider: v.provider as 'zernio' | 'manual',
+            provider: v.provider as 'zernio' | 'manual' | 'direct',
           })
         );
       case 'mapping':
@@ -1708,6 +1764,8 @@ export function Dashboard({
               selectField('metric', 'Metric', [
                 option('public_views', 'Public views (unverified)'),
                 option('organic_views', 'Organic views (evidence required)'),
+                option('paid_views', 'Paid views (never eligible)'),
+                option('uncertain_views', 'Uncertain views'),
               ]),
               {
                 name: 'observedAt',
@@ -1727,7 +1785,7 @@ export function Dashboard({
               input: {
                 postId: p.id,
                 views: Number(v.views),
-                metric: v.metric as 'public_views' | 'organic_views',
+                metric: v.metric as Snapshot['metric'],
                 observedAt: iso(v.observedAt),
                 providerUpdatedAt: null,
                 evidence: v.evidence,
@@ -1759,6 +1817,15 @@ export function Dashboard({
               </div>
               {form(
                 [
+                  ...(p.tracking?.contentType === 'shorts_candidate'
+                    ? [
+                        selectField(
+                          'shortsConfirmed',
+                          'Evidence confirms this is a YouTube Short',
+                          [option('no', 'Not confirmed'), option('yes', 'Confirmed by evidence')]
+                        ),
+                      ]
+                    : []),
                   selectField('decision', 'Decision', [
                     option('accepted', 'Accept verified eligible views'),
                     option('excluded', 'Exclude post'),
@@ -1822,6 +1889,7 @@ export function Dashboard({
                           reference: v.evidenceReference,
                           windowStart: iso(v.windowStart),
                           windowEnd: iso(v.windowEnd),
+                          shortsConfirmed: v.shortsConfirmed === 'yes',
                           organicConfirmed: v.organicConfirmed === 'yes',
                           cutoffConfirmed: v.cutoffConfirmed === 'yes',
                         },
@@ -1995,9 +2063,9 @@ export function Dashboard({
             <div className="info-box">
               <Link2 size={18} />
               <p>
-                Send this one-use authorization link to the creator. They connect their TikTok
-                account through Zernio without receiving administrator access. The dashboard ticket
-                expires after 30 minutes.
+                Send this one-use authorization link to the creator. They connect their registered
+                social account through Zernio without receiving administrator access. The dashboard
+                ticket expires after 30 minutes.
               </p>
             </div>
             <label className="field">
@@ -2406,7 +2474,7 @@ function ImportPanel({
                       ? rows.map((r) => ({
                           postId: r.post_id,
                           views: Number(r.views),
-                          metric: r.metric as 'public_views' | 'organic_views',
+                          metric: r.metric as Snapshot['metric'],
                           observedAt: r.observed_at,
                           providerUpdatedAt: null,
                           evidence: r.evidence || '',

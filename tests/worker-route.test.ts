@@ -20,8 +20,12 @@ vi.mock('@/services/tracking/zernio', () => ({
     }
   },
 }));
+vi.mock('@/services/lifecycle/worker', () => ({
+  maintainProviders: vi.fn().mockResolvedValue({ erased: 0, revocation: false, checked: false }),
+}));
 import { POST } from '@/app/api/internal/jobs/route';
 import { GET } from '@/app/api/operations/route';
+import { maintainProviders } from '@/services/lifecycle/worker';
 const secret = 'random-test-secret-'.repeat(3);
 const job = { id: 'job', account_id: 'account', lease_token: 'unique-lease' };
 function request(auth = `Bearer ${secret}`) {
@@ -32,6 +36,7 @@ function request(auth = `Bearer ${secret}`) {
 }
 beforeEach(() => {
   vi.resetAllMocks();
+  vi.mocked(maintainProviders).mockResolvedValue({ erased: 0, revocation: false, checked: false });
   for (const [key, value] of Object.entries({
     CONTEXT: 'production',
     NEXT_PUBLIC_SUPABASE_URL: 'https://test.supabase.co',
@@ -45,11 +50,18 @@ beforeEach(() => {
     vi.stubEnv(key, value);
   mocks.database.mockReturnValue({ rpc: mocks.rpc });
   mocks.rpc.mockImplementation(async (name: string) => ({
-    data: name === 'lease_tracking_job' ? job : true,
+    data:
+      name === 'lease_tracking_job'
+        ? mocks.rpc.mock.calls.filter(([n]) => n === 'lease_tracking_job').length === 1
+          ? job
+          : null
+        : true,
     error: null,
   }));
   mocks.load.mockResolvedValue({
-    data: { accounts: [{ id: 'account', status: 'connected' }] },
+    data: {
+      accounts: [{ id: 'account', status: 'connected', provider: 'zernio', platform: 'tiktok' }],
+    },
     revision: 3,
   });
   mocks.sync.mockResolvedValue({
@@ -156,7 +168,14 @@ describe('authenticated scheduled worker', () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(started);
     mocks.load.mockImplementation(async () => {
       clock.mockReturnValue(started + 10000);
-      return { data: { accounts: [{ id: 'account', status: 'connected' }] }, revision: 3 };
+      return {
+        data: {
+          accounts: [
+            { id: 'account', status: 'connected', provider: 'zernio', platform: 'tiktok' },
+          ],
+        },
+        revision: 3,
+      };
     });
     expect((await POST(request())).status).toBe(200);
     expect(mocks.provider).toHaveBeenCalledWith(started + 45000);
@@ -167,6 +186,47 @@ describe('authenticated scheduled worker', () => {
     vi.stubEnv('APP_DEPLOYMENT_ENV', 'preview');
     expect((await POST(request())).status).toBe(503);
     expect(mocks.database).not.toHaveBeenCalled();
+  });
+  it('processes several independently leased accounts in one Cron request', async () => {
+    const jobs = Array.from({ length: 4 }, (_, i) => ({
+      id: `job-${i}`,
+      account_id: `account-${i}`,
+      lease_token: `lease-${i}`,
+    }));
+    mocks.rpc.mockImplementation(async (name: string) => ({
+      data: name === 'lease_tracking_job' ? (jobs.shift() ?? null) : true,
+      error: null,
+    }));
+    mocks.load.mockResolvedValue({
+      data: {
+        accounts: Array.from({ length: 4 }, (_, i) => ({
+          id: `account-${i}`,
+          status: 'connected',
+          provider: 'zernio',
+          platform: 'tiktok',
+        })),
+      },
+      revision: 3,
+    });
+    mocks.sync.mockImplementation(async (_data: Record<string, unknown>, accountId: string) => ({
+      ..._data,
+      syncRuns: [{ account_id: accountId, status: 'success' }],
+    }));
+    const response = await POST(request());
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ processed: 4, success: true });
+    expect(mocks.sync).toHaveBeenCalledTimes(4);
+    expect(mocks.rpc.mock.calls.filter(([name]) => name === 'enqueue_tracking')).toHaveLength(1);
+  });
+  it('stops leasing before the shared execution budget is exhausted', async () => {
+    const start = Date.now(),
+      clock = vi.spyOn(Date, 'now').mockReturnValue(start);
+    mocks.sync.mockImplementation(async () => {
+      clock.mockReturnValue(start + 38000);
+      return { syncRuns: [{ account_id: 'account', status: 'success' }] };
+    });
+    expect((await POST(request())).status).toBe(200);
+    expect(mocks.rpc.mock.calls.filter(([name]) => name === 'lease_tracking_job')).toHaveLength(1);
   });
   it('requires administrator authorization before returning operations data', async () => {
     mocks.admin.mockRejectedValue(new Error('UNAUTHORIZED'));

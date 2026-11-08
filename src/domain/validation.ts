@@ -61,6 +61,7 @@ const evidence = z.object({
   windowEnd: date,
   organicConfirmed: z.boolean(),
   cutoffConfirmed: z.boolean(),
+  shortsConfirmed: z.boolean().optional(),
 });
 export const postInputSchema = z
   .object({
@@ -76,7 +77,7 @@ export const snapshotInputSchema = z
   .object({
     postId: id,
     views: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-    metric: z.enum(['public_views', 'organic_views']),
+    metric: z.enum(['public_views', 'organic_views', 'paid_views', 'uncertain_views']),
     observedAt: date,
     providerUpdatedAt: date.nullable().default(null),
     evidence: z.string().max(4000).default(''),
@@ -125,7 +126,7 @@ export const commandSchema = z.discriminatedUnion('type', [
     platform: z.enum(platforms),
     username: z.string().trim().min(1).max(100),
     ownership: z.enum(['company', 'creator']),
-    provider: z.enum(['manual', 'zernio']),
+    provider: z.enum(['manual', 'zernio', 'direct']),
   }),
   z.object({
     type: z.literal('mapAccount'),
