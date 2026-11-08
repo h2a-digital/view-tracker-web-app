@@ -111,6 +111,7 @@ function grant(
       json({
         data: {
           app_id: options.app ?? '123456',
+          type: 'SYSTEM_USER',
           is_valid: true,
           user_id: '333',
           scopes: options.scopes ?? scopes('instagram', 'unified_login'),

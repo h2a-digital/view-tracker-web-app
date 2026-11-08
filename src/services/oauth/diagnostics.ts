@@ -39,6 +39,7 @@ export type CallbackTrace = {
   youtubeAnalyticsGranted?: boolean;
   authorizedChannelCount?: number;
   instagramTokenType?: 'SYSTEM_USER' | 'USER' | 'PAGE' | 'APP' | 'missing' | 'other';
+  instagramActorIdSource?: 'debug_token';
   instagramActorIdType?: 'string' | 'number' | 'null' | 'missing' | 'other';
   instagramBusinessIdType?: 'string' | 'number' | 'null' | 'missing' | 'other';
 };
@@ -123,6 +124,9 @@ export function reportCallbackFailure(trace: CallbackTrace, error: unknown) {
         ? { youtubeAnalyticsGranted: trace.youtubeAnalyticsGranted }
         : {}),
       ...(trace.instagramTokenType ? { instagramTokenType: trace.instagramTokenType } : {}),
+      ...(trace.instagramActorIdSource
+        ? { instagramActorIdSource: trace.instagramActorIdSource }
+        : {}),
       ...(trace.instagramActorIdType ? { instagramActorIdType: trace.instagramActorIdType } : {}),
       ...(trace.instagramBusinessIdType
         ? { instagramBusinessIdType: trace.instagramBusinessIdType }

@@ -102,11 +102,11 @@ export async function resolveUnifiedInstagram(
       : ['SYSTEM_USER', 'USER', 'PAGE', 'APP'].includes(debug.type)
         ? (debug.type as 'SYSTEM_USER' | 'USER' | 'PAGE' | 'APP')
         : 'other';
-  if (debug.type === 'PAGE' || debug.type === 'APP')
+  if (debug.type !== 'SYSTEM_USER')
     rejectCallback(
       trace,
       'instagram_unified_token_type_invalid',
-      'Instagram authorization returned an incompatible token type.'
+      'Instagram Unified Login requires a validated system-user token.'
     );
   if (!debug.is_valid || debug.app_id !== c.clientId)
     rejectCallback(
@@ -157,9 +157,12 @@ export async function resolveUnifiedInstagram(
     );
   };
   trace.stage = 'instagram_unified_identity';
-  // /me identifies the system-user actor, not the Instagram account. Business
-  // metadata is useful for the separate BISU management API, which we do not use
-  // for the configured non-expiring grant. It is not proof of Instagram ownership.
+  // The app-authenticated token debugger supplies the subject (user_id). With a
+  // verified SYSTEM_USER token this is the actor; never substitute a business ID.
+  // /me?fields=client_business_id is a business-metadata request. Some valid
+  // responses omit the unrequested id despite the guide's illustrative example.
+  const actorId = debug.user_id;
+  trace.instagramActorIdSource = 'debug_token';
   const body = await request(`${origin}/me?fields=client_business_id`);
   const fields = z
     .object({ id: z.unknown().optional(), client_business_id: z.unknown().optional() })
@@ -168,17 +171,17 @@ export async function resolveUnifiedInstagram(
   trace.instagramBusinessIdType = fieldType(
     fields.success ? fields.data.client_business_id : undefined
   );
-  const parsed = z.object({ id, client_business_id: id.nullish() }).safeParse(body);
+  const parsed = z.object({ id: id.optional(), client_business_id: id.nullish() }).safeParse(body);
   if (!parsed.success)
     rejectCallback(
       trace,
-      !fields.success || !id.safeParse(fields.data.id).success
+      !fields.success || (fields.data.id !== undefined && !id.safeParse(fields.data.id).success)
         ? 'instagram_system_user_id_invalid'
         : 'instagram_client_business_id_invalid',
       'Meta returned an invalid Instagram authorization identity.'
     );
   const identity = parsed.data;
-  if (identity.id !== debug.user_id)
+  if (identity.id !== undefined && identity.id !== actorId)
     rejectCallback(
       trace,
       'instagram_system_user_mismatch',
@@ -202,7 +205,7 @@ export async function resolveUnifiedInstagram(
     bundle: {
       accessToken: token.access_token,
       authMode: 'unified_login',
-      actorId: identity.id,
+      actorId,
       deletionSubjectId: debug.user_id,
       clientBusinessId: identity.client_business_id ?? undefined,
       configId: c.loginConfigId,
