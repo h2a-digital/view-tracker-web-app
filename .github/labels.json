@@ -1,0 +1,37 @@
+[
+  {
+    "name": "Bug",
+    "color": "d73a4a",
+    "description": "Something isn't working"
+  },
+  {
+    "name": "Documentation",
+    "color": "0075ca",
+    "description": "Improvements or additions to documentation"
+  },
+  {
+    "name": "Duplicate",
+    "color": "cfd3d7",
+    "description": "This issue or pull request already exists"
+  },
+  {
+    "name": "Idea",
+    "color": "FFC000",
+    "description": "Possible future features you\u2019re not sure about yet."
+  },
+  {
+    "name": "New feature",
+    "color": "a2eeef",
+    "description": "New feature or request"
+  },
+  {
+    "name": "Tech Debt",
+    "color": "ffffff",
+    "description": "Refactoring, cleanup, performance improvements."
+  },
+  {
+    "name": "UI / UX",
+    "color": "5319e7",
+    "description": "Screens, animations, user experience improvements."
+  }
+]
