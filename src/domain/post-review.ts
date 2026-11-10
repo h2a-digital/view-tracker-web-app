@@ -6,6 +6,26 @@ export type PostReview = {
   reason: string;
   action: string;
 };
+/** Display-only discovery horizon for unassigned content, not an inferred compensation deadline. */
+const unassignedHistoryAgeMs = 168 * 3600000;
+function isUnassignedHistoricalImport(data: DashboardData, post: Post, now: string): boolean {
+  if (post.campaign_id || post.app_id || post.rules || post.deadline) return false;
+  const publication = Date.parse(post.published_at);
+  const observations = [
+    post.tracking?.firstSeenAt,
+    post.tracking?.latestInWindow?.observedAt,
+    ...data.snapshots.filter((s) => s.post_id === post.id).map((s) => s.observed_at),
+  ]
+    .map((value) => (value ? Date.parse(value) : NaN))
+    .filter((value) => Number.isFinite(value) && value >= publication && value <= Date.parse(now));
+  // Do not manufacture discovery time from `now`, provider freshness, or the account's latest sync.
+  // Earlier observations preserve the review path even if firstSeenAt was recorded on a later import.
+  return (
+    Number.isFinite(publication) &&
+    observations.length > 0 &&
+    observations.every((observedAt) => observedAt - publication > unassignedHistoryAgeMs)
+  );
+}
 /** Presentation/work-queue states only. This never approves views or changes financial inputs. */
 export function postReview(data: DashboardData, post: Post, now: string): PostReview {
   const state = trackingState(data, post, now);
@@ -39,14 +59,20 @@ export function postReview(data: DashboardData, post: Post, now: string): PostRe
       reason: 'The eligible total has been reviewed with organic and cutoff evidence.',
       action: 'Bonus approval and final payout approval remain required where configured.',
     };
-  if (state.issues.includes('historical_window_missing') && post.eligibility_status !== 'accepted')
+  const unassignedHistory = isUnassignedHistoricalImport(data, post, now);
+  if (
+    (state.issues.includes('historical_window_missing') || unassignedHistory) &&
+    post.eligibility_status !== 'accepted'
+  )
     return {
       stage: 'historical',
       label: 'Historical',
-      reason:
-        'Discovered after its tracking/follow-up window; lifetime views cannot reconstruct its eligible organic total.',
-      action:
-        'Exclude historical content from this program, or supply evidence for the original window. It remains unresolved for payouts until then.',
+      reason: unassignedHistory
+        ? 'First recorded more than 168 hours after publication, without earlier tracking observations. No campaign or compensation window has been assigned; lifetime public views do not establish eligible organic views.'
+        : 'Discovered after its tracking/follow-up window; lifetime views cannot reconstruct its eligible organic total.',
+      action: unassignedHistory
+        ? 'Retained for historical reporting; no operational review is required. It cannot earn compensation without explicit valid attribution and evidence-backed eligibility review.'
+        : 'Exclude historical content from this program, or supply evidence for the original window. It remains unresolved for payouts until then.',
     };
   const review = (reason: string, action: string): PostReview => ({
     stage: 'review',

@@ -1,6 +1,7 @@
 import { it, expect } from 'vitest';
 import { seedData, runCommand } from '@/domain/commands';
 import { postReview } from '@/domain/post-review';
+import { verselRules } from '@/domain/model';
 import { trackingState } from '@/domain/tracking';
 import { populatedDocument } from './helpers/dashboard';
 import { auditDescription, ruleDescription } from '@/domain/presentation';
@@ -157,4 +158,78 @@ it('formats history with readable terms and preserves small CPM precision', () =
   };
   expect(auditDescription(event, data)).toBe('Details updated · Creator');
   expect(auditDescription(event, data)).not.toContain('Entity');
+});
+
+it('classifies old unassigned Instagram imports from recorded discovery time without creating a deadline or changing money', async () => {
+  const { paginationFixture } = await import('./helpers/pagination');
+  const { groupReviews } = await import('@/domain/review-groups');
+  const { browserDashboard } = await import('@/domain/read-model');
+  const { performanceReport } = await import('@/domain/analytics');
+  const { paginatePosts, postPageSchema } = await import('@/domain/post-pages');
+  const { calculateStatement, calculateProvisional } = await import('@/domain/compensation');
+  const data = paginationFixture(),
+    before = structuredClone(data);
+  const imported = data.posts.filter((post) => post.platform === 'instagram');
+  for (const post of imported) {
+    expect(postReview(data, post, now).stage).toBe('historical');
+    expect(post.deadline).toBeNull();
+    expect(post.rules).toBeNull();
+    expect(post.eligible_views).toBeNull();
+  }
+  const groups = groupReviews(data, 'all', now);
+  expect(groups.find((group) => group.accountId === imported[0].account_id)).toMatchObject({
+    cause: 'historical',
+    count: 49,
+  });
+  expect(browserDashboard(data).readModel?.overview.all.reviews).toBe(0);
+  expect(performanceReport(data).rows).toHaveLength(54);
+  expect(paginatePosts(data, postPageSchema.parse({})).total).toBe(54);
+  for (const compute of [calculateStatement, calculateProvisional]) {
+    expect(
+      compute(data, data.apps[0].id, data.creators[0].id, '2026-10', verselRules).payableCents
+    ).toBe(0);
+  }
+  expect(data).toEqual(before);
+});
+it('keeps newly discovered unmapped posts under review, including exactly 168 hours and repeated later syncs', async () => {
+  const { paginationFixture } = await import('./helpers/pagination');
+  const { reviewCause } = await import('@/domain/review-groups');
+  const data = paginationFixture(),
+    post = data.posts[0];
+  data.snapshots = [];
+  for (const age of [1, 167, 168]) {
+    post.published_at = new Date(Date.parse(now) - age * 3600000).toISOString();
+    post.tracking = { ...trackingState(data, post, now), firstSeenAt: now };
+    expect(postReview(data, post, now).stage).toBe('review');
+    expect(reviewCause(data, post, now)).toBe('mapping');
+    expect(postReview(data, post, '2026-12-10T12:00:00.000Z').stage).toBe('review');
+  }
+  post.published_at = new Date(Date.parse(now) - 168 * 3600000 - 1).toISOString();
+  expect(postReview(data, post, now).stage).toBe('historical');
+});
+it('requires a recorded observation and preserves earlier collection evidence instead of using today or cached provider freshness', async () => {
+  const { paginationFixture } = await import('./helpers/pagination');
+  const data = paginationFixture(),
+    post = data.posts[0],
+    snapshot = data.snapshots[0];
+  post.tracking = null;
+  data.snapshots = [];
+  expect(postReview(data, post, now).stage).toBe('review');
+  post.tracking = trackingState(data, post, now);
+  post.tracking.firstSeenAt = 'bad timestamp';
+  expect(postReview(data, post, now).stage).toBe('review');
+  post.tracking.firstSeenAt = '2027-01-01T00:00:00Z';
+  expect(postReview(data, post, now).stage).toBe('review');
+  post.tracking.firstSeenAt = now;
+  expect(postReview(data, post, now).stage).toBe('historical');
+  data.snapshots = [{ ...snapshot, observed_at: post.published_at }];
+  expect(postReview(data, post, now).stage).toBe('review');
+  data.snapshots = [{ ...snapshot, observed_at: now, provider_updated_at: post.published_at }];
+  expect(postReview(data, post, now).stage).toBe('historical');
+  post.tracking.latestInWindow = {
+    views: 100,
+    observedAt: post.published_at,
+    providerAt: post.published_at,
+  };
+  expect(postReview(data, post, now).stage).toBe('review');
 });

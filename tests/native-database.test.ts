@@ -45,7 +45,7 @@ it.skipIf(!socket)(
       const roundtrip = JSON.parse(result);
       expect(roundtrip.revision).toBe(1);
       expect(roundtrip.data.statements[0].payable_cents).toBe(1300);
-      for (const key of Object.keys(document) as (keyof typeof document)[])
+      for (const key of Object.keys(document) as Exclude<keyof typeof document, 'readModel'>[])
         expect(roundtrip.data[key].length, key).toBe(document[key].length);
       sql(
         `set role service_role;select public.commit_dashboard(1,(public.read_dashboard()->'data'));`

@@ -1,4 +1,5 @@
 import { beforeEach, it, expect, vi } from 'vitest';
+import { seedData } from '@/domain/commands';
 const mocks = vi.hoisted(() => ({
   admin: vi.fn(),
   origin: vi.fn(),
@@ -22,7 +23,10 @@ const request = () =>
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.load.mockResolvedValue({
-    data: { accounts: [{ id, platform: 'instagram', provider: 'direct', status: 'connected' }] },
+    data: {
+      ...seedData(),
+      accounts: [{ id, platform: 'instagram', provider: 'direct', status: 'connected' }],
+    },
     revision: 5,
   });
   mocks.refresh.mockResolvedValue({ status: 'updated', processed: true });

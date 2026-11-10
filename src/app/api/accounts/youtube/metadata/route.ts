@@ -1,3 +1,4 @@
+import { browserDashboard } from '@/domain/read-model';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin, requireSameOrigin, adminDatabase } from '@/lib/server/supabase';
@@ -41,9 +42,11 @@ export async function POST(request: Request) {
         result.message = 'The account changed during lookup. Refresh and retry.';
       }
     }
+    const refreshed = await loadDashboard();
     return NextResponse.json(
       {
-        ...(await loadDashboard()),
+        ...refreshed,
+        data: browserDashboard(refreshed.data),
         results: results.map(({ accountId, status, message }) => ({ accountId, status, message })),
       },
       { headers: { 'Cache-Control': 'no-store' } }

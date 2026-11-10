@@ -1,3 +1,4 @@
+import { seedData } from '@/domain/commands';
 import { beforeEach, afterEach, it, expect, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   admin: vi.fn(),
@@ -26,7 +27,7 @@ const request = () =>
   });
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.load.mockResolvedValue({ data: { accounts: [] }, revision: 5 });
+  mocks.load.mockResolvedValue({ data: { ...seedData(), accounts: [] }, revision: 5 });
   mocks.rpc.mockResolvedValue({ data: [], error: null });
 });
 afterEach(() => vi.unstubAllEnvs());

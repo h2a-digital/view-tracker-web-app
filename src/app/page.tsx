@@ -1,4 +1,5 @@
 import { thumbnailPersistenceAllowed } from '@/lib/server/thumbnail-policy';
+import { browserDashboard } from '@/domain/read-model';
 import { Dashboard } from '@/components/dashboard/Dashboard';
 import { Access } from '@/components/dashboard/Access';
 import { hostedDeployment, hostedPreview } from '@/lib/server/deployment';
@@ -28,7 +29,7 @@ export default async function Page({
   if (!state) return <Access notice={failure === 'UNAUTHORIZED' ? '' : failure} />;
   return (
     <Dashboard
-      initial={state.data}
+      initial={browserDashboard(state.data)}
       thumbnailPreviewOnly={!thumbnailPersistenceAllowed()}
       initialAsOf={new Date().toISOString()}
     />

@@ -1,3 +1,4 @@
+import { seedData } from '@/domain/commands';
 import { beforeEach, it, expect, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   admin: vi.fn(),
@@ -29,7 +30,7 @@ const request = () =>
   });
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.load.mockResolvedValue({ data: { accounts: [account] }, revision: 5 });
+  mocks.load.mockResolvedValue({ data: { ...seedData(), accounts: [account] }, revision: 5 });
   mocks.lookup.mockResolvedValue([
     {
       accountId: id,
@@ -67,7 +68,10 @@ it('persists with identity binding and returns dashboard metadata without exposi
 });
 it('rejects unavailable/erased accounts instead of restoring deleted provider data', async () => {
   mocks.load.mockResolvedValue({
-    data: { accounts: [{ ...account, integration: { sourceErasedAt: new Date().toISOString() } }] },
+    data: {
+      ...seedData(),
+      accounts: [{ ...account, integration: { sourceErasedAt: new Date().toISOString() } }],
+    },
     revision: 5,
   });
   expect((await POST(request())).status).toBe(400);

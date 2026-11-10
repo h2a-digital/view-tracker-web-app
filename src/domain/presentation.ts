@@ -59,6 +59,7 @@ export function auditDescription(event: AuditEvent, data: DashboardData): string
     addSnapshot: 'View observation recorded',
     attributePost: 'Post campaign assigned',
     reviewPost: 'Post eligibility reviewed',
+    excludeUnattributedPosts: 'Unattributed content excluded from compensation',
     excludeHistoricalPosts: 'Historical posts excluded from compensation',
     importRows: 'Data imported',
     generateStatement: 'Monthly payout calculated',

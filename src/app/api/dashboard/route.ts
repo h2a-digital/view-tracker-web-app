@@ -1,3 +1,4 @@
+import { browserDashboard } from '@/domain/read-model';
 import { NextResponse } from 'next/server';
 import { requireAdmin, requireSameOrigin } from '@/lib/server/supabase';
 import { loadDashboard, saveDashboard } from '@/repositories/dashboard';
@@ -8,8 +9,13 @@ import { apiError } from '@/lib/server/http';
 export async function GET() {
   try {
     await requireAdmin();
+    const state = await loadDashboard();
     return NextResponse.json(
-      { ...(await loadDashboard()), asOf: new Date().toISOString() },
+      {
+        data: browserDashboard(state.data),
+        revision: state.revision,
+        asOf: new Date().toISOString(),
+      },
       { headers: { 'Cache-Control': 'no-store' } }
     );
   } catch (error) {
@@ -44,7 +50,12 @@ export async function POST(request: Request) {
     }
     await saveDashboard(next, revision);
     return NextResponse.json(
-      { data: next, revision: revision + 1, notice, asOf: new Date().toISOString() },
+      {
+        data: browserDashboard(next),
+        revision: revision + 1,
+        notice,
+        asOf: new Date().toISOString(),
+      },
       { headers: { 'Cache-Control': 'no-store' } }
     );
   } catch (error) {

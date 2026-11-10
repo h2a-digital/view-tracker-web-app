@@ -1,3 +1,4 @@
+import { browserDashboard } from '@/domain/read-model';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin, requireSameOrigin, adminDatabase } from '@/lib/server/supabase';
@@ -36,8 +37,9 @@ export async function POST(request: Request) {
         'Instagram/Zernio is disabled. Enable the existing pilot setting before refreshing its profile.'
       );
     const result = await refreshProfile(adminDatabase(), Date.now() + 15000, accountId);
+    const refreshed = await loadDashboard();
     return NextResponse.json(
-      { ...(await loadDashboard()), result },
+      { ...refreshed, data: browserDashboard(refreshed.data), result },
       { headers: { 'Cache-Control': 'no-store' } }
     );
   } catch (error) {

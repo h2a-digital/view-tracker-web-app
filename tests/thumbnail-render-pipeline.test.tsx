@@ -94,7 +94,8 @@ it('round-trips five fetched previews through isolated PostgreSQL, API JSON and 
         onOpen={() => {}}
       />
     );
-    expect(markup.match(/<img /g)).toHaveLength(5);
+    expect(markup.match(/class="post-thumbnail-foreground"/g)).toHaveLength(5);
+    expect(markup.match(/class="post-thumbnail-background"/g)).toHaveLength(5);
     expect(markup).not.toContain('Preview unavailable');
     for (const asset of assets.slice(0, 5))
       expect(markup).toContain(asset.url.replaceAll('&', '&amp;'));

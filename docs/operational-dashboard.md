@@ -1,5 +1,7 @@
 # Operational dashboard and historical media backfill
 
+**Latest update:** [Compact posts and grouped reviews](post-pagination-and-review.md) supersedes the list/payload and deployment guidance below: apply the additive post-pagination migration before deploying the paginated dashboard. Historical and unmapped exclusions now use account/cause groups with confirmation.
+
 **Local testing follow-up:** [Local preview refresh](local-preview-refresh.md) explains the queue-only Sync behavior, post-mount rendering clock fix and safe immediate per-account action. Localhost does not run production Cron.
 
 ## Verified diagnosis (read-only)

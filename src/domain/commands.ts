@@ -384,6 +384,10 @@ export function runCommand(
     }
     case 'mapAccount': {
       const a = requireValue(data.accounts.find((a) => a.id === command.accountId && !a.archived));
+      if (a.ownership === 'company' && !command.confirmCompanyCompensation)
+        throw new Error(
+          'Explicitly confirm creator compensation routing for this company-owned account.'
+        );
       const m = requireValue(data.memberships.find((m) => m.id === command.membershipId));
       if (m.creator_id !== a.creator_id)
         throw new Error('The account and campaign membership must belong to the same creator.');
@@ -490,6 +494,32 @@ export function runCommand(
       ensureEditable(data, p);
       setAttribution(data, p, command.campaignId);
       entityId = p.id;
+      break;
+    }
+    case 'excludeUnattributedPosts': {
+      const targets = command.postIds.map((id) =>
+        requireValue(data.posts.find((p) => p.id === id))
+      );
+      for (const post of targets) {
+        ensureEditable(data, post);
+        if (
+          post.app_id ||
+          post.campaign_id ||
+          post.source_erased_at ||
+          post.deleted ||
+          ['accepted', 'excluded'].includes(post.eligibility_status)
+        )
+          throw new Error('Only unresolved, unattributed posts can be excluded with this action.');
+      }
+      for (const post of targets) {
+        post.eligible_views = 0;
+        post.eligibility_status = 'excluded';
+        post.review_note = command.note;
+        post.review_evidence = null;
+        post.accepted_by = actor;
+        post.accepted_at = now;
+      }
+      entityId = targets[0].id;
       break;
     }
     case 'excludeHistoricalPosts': {
@@ -871,11 +901,15 @@ export function runCommand(
     action: command.type,
     entity_id: entityId,
     detail:
-      command.type === 'reviewPost' || command.type === 'excludeHistoricalPosts'
+      command.type === 'reviewPost' ||
+      command.type === 'excludeHistoricalPosts' ||
+      command.type === 'excludeUnattributedPosts'
         ? command.note
         : command.type === 'approveBonus'
           ? command.note
-          : `${actor} · ${command.type}`,
+          : command.type === 'mapAccount' && command.confirmCompanyCompensation
+            ? `${actor} explicitly approved creator compensation routing for a company-owned account`
+            : `${actor} · ${command.type}`,
     created_at: now,
   });
   return data;

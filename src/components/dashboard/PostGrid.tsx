@@ -18,15 +18,29 @@ function Thumbnail({ post, now }: { post: Post; now: number }) {
   return (
     <div className={`post-thumbnail ${post.platform}`}>
       {src && failedUrl !== src ? (
-        <Image
-          src={src}
-          alt=""
-          fill
-          unoptimized
-          sizes="(max-width: 767px) 100vw, (max-width: 1279px) 50vw, 33vw"
-          referrerPolicy="no-referrer"
-          onError={() => setFailedUrl(src)}
-        />
+        <>
+          <Image
+            className="post-thumbnail-background"
+            src={src}
+            alt=""
+            aria-hidden="true"
+            fill
+            unoptimized
+            sizes="(max-width: 650px) 100vw, (max-width: 1100px) 50vw, (min-width: 1550px) 25vw, 33vw"
+            referrerPolicy="no-referrer"
+            onError={() => setFailedUrl(src)}
+          />
+          <Image
+            className="post-thumbnail-foreground"
+            src={src}
+            alt=""
+            fill
+            unoptimized
+            sizes="(max-width: 650px) 100vw, (max-width: 1100px) 50vw, (min-width: 1550px) 25vw, 33vw"
+            referrerPolicy="no-referrer"
+            onError={() => setFailedUrl(src)}
+          />
+        </>
       ) : (
         <div className="post-thumbnail-fallback">
           <Icon size={28} strokeWidth={1.5} />

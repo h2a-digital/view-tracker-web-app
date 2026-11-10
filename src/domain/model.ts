@@ -186,6 +186,7 @@ export type SyncRun = {
   diagnostics?: SyncDiagnostics | null;
 };
 export type DashboardData = {
+  readModel?: import('./read-model').DashboardReadModel;
   apps: AppRecord[];
   campaigns: Campaign[];
   creators: Creator[];

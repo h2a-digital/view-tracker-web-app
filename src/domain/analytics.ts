@@ -182,3 +182,47 @@ export function observationTrend(data: DashboardData, filters: AnalyticsFilters 
   }
   return [...days.values()];
 }
+
+export function analyticsSummary(data: DashboardData, filters: AnalyticsFilters = {}) {
+  const report = performanceReport(data, filters);
+  const groups = (by: 'creator' | 'platform') =>
+    [
+      ...new Set(report.rows.map((r) => (by === 'creator' ? r.post.creator_id : r.post.platform))),
+    ].map((id) => {
+      const rows = report.rows.filter(
+        (r) => (by === 'creator' ? r.post.creator_id : r.post.platform) === id
+      );
+      return {
+        id,
+        name:
+          by === 'creator' ? data.creators.find((c) => c.id === id)?.name || 'Unknown creator' : id,
+        posts: rows.length,
+        public: rows.reduce((n, r) => n + (r.publicViews ?? 0), 0),
+        eligible: rows.reduce((n, r) => n + (r.eligibleViews ?? 0), 0),
+        observed: rows.filter((r) => r.publicViews !== null).length,
+      };
+    });
+  return {
+    report: {
+      publicViews: report.publicViews,
+      eligibleViews: report.eligibleViews,
+      observed: report.observed,
+      verified: report.verified,
+      conflicts: report.conflicts,
+      postCount: report.rows.length,
+    },
+    creators: groups('creator'),
+    platforms: groups('platform'),
+    days: observationTrend(data, filters),
+    financial: financialReport(data, filters).map((row) => ({
+      ...row,
+      statement: {
+        id: row.statement.id,
+        app_id: row.statement.app_id,
+        creator_id: row.statement.creator_id,
+        month: row.statement.month,
+        status: row.statement.status,
+      },
+    })),
+  };
+}

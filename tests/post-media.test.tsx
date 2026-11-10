@@ -6,8 +6,45 @@ import { demoWorkspace } from '@/domain/demo';
 import { cacheThumbnail, usableThumbnail, thumbnailRetentionMs } from '@/domain/post-media';
 import { thumbnailBackfillDue } from '@/domain/post-media';
 import { trackingState } from '@/domain/tracking';
+import { readFileSync } from 'node:fs';
 const now = Date.parse('2026-11-10T12:00:00Z');
 const image = 'https://i.ytimg.com/vi/verified-id/hqdefault.jpg';
+it('uses the same sharp and decorative image layers in compact and regular cards without changing data', () => {
+  const data = demoWorkspace(),
+    post = data.posts[0];
+  post.tracking = trackingState(data, post, new Date(now).toISOString());
+  cacheThumbnail(post, image, new Date(now).toISOString());
+  const before = structuredClone(data);
+  for (const compact of [true, false]) {
+    const html = renderToStaticMarkup(
+      <PostGrid data={data} posts={[post]} compact={compact} now={now} onOpen={() => {}} />
+    );
+    expect(html.match(/class="post-thumbnail-foreground"/g)).toHaveLength(1);
+    expect(html.match(/class="post-thumbnail-background"/g)).toHaveLength(1);
+    expect(
+      html.match(new RegExp(`src="${image.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g'))
+    ).toHaveLength(2);
+    expect(html).toContain('aria-hidden="true"');
+    expect(html).toContain('post-play');
+    expect(html).toContain('post-platform');
+    expect(html).toContain('View post details:');
+  }
+  expect(data).toEqual(before);
+});
+it('contains the full foreground image and blurs only the background within the fixed preview', () => {
+  const css = readFileSync('src/styles/globals.css', 'utf8');
+  const imageRules = [...css.matchAll(/\.post-thumbnail img\s*\{([^}]+)\}/g)];
+  expect(imageRules.length).toBeGreaterThan(0);
+  for (const [, declarations] of imageRules) {
+    expect(declarations).toContain('object-fit: contain');
+    expect(declarations).not.toContain('filter:');
+  }
+  expect(css).toMatch(
+    /\.post-thumbnail img\.post-thumbnail-background\s*\{[^}]*object-fit: cover;[^}]*filter: blur\(16px\) brightness\(0\.55\)/
+  );
+  expect(css).toMatch(/\.post-thumbnail-foreground\s*\{[^}]*z-index: 1/);
+  expect(css).toMatch(/\.post-thumbnail\s*\{[^}]*overflow: hidden/);
+});
 it('caches only supported HTTPS provider images, rejects credentials, expired signatures and stale/future timestamps', () => {
   const thumbnail = { url: image, capturedAt: new Date(now).toISOString() };
   expect(usableThumbnail(thumbnail, now)).toBe(image);

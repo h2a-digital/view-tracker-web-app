@@ -192,7 +192,7 @@ describe('dynamic INSERT statements and transactional behavior', () => {
       ]);
       const first = await readDocument(isolated);
       expect(first.revision).toBe(1);
-      for (const key of Object.keys(document) as (keyof DashboardData)[]) {
+      for (const key of Object.keys(document) as Exclude<keyof DashboardData, 'readModel'>[]) {
         expect(document[key].length, key).toBeGreaterThan(0);
         expect(first.data[key].length, key).toBe(document[key].length);
       }

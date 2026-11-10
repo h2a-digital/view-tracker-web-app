@@ -131,6 +131,7 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('mapAccount'),
     accountId: id,
+    confirmCompanyCompensation: z.boolean().default(false),
     membershipId: id,
     startsAt: date,
     endsAt: date.nullable().default(null),
@@ -147,6 +148,15 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('addPost'), input: postInputSchema }),
   z.object({ type: z.literal('addSnapshot'), input: snapshotInputSchema }),
   z.object({ type: z.literal('attributePost'), postId: id, campaignId: id }),
+  z.object({
+    type: z.literal('excludeUnattributedPosts'),
+    postIds: z
+      .array(id)
+      .min(1)
+      .max(100)
+      .refine((ids) => new Set(ids).size === ids.length, 'Select each post once.'),
+    note: z.string().trim().min(5).max(4000),
+  }),
   z.object({
     type: z.literal('excludeHistoricalPosts'),
     postIds: z

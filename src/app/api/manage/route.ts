@@ -1,3 +1,4 @@
+import { browserDashboard } from '@/domain/read-model';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin, requireSameOrigin, adminDatabase } from '@/lib/server/supabase';
@@ -54,7 +55,11 @@ export async function POST(request: Request) {
           ? 'Apply the dashboard management migration before using removal or archival.'
           : error.message
       );
-    return NextResponse.json(await loadDashboard(), { headers: { 'Cache-Control': 'no-store' } });
+    const state = await loadDashboard();
+    return NextResponse.json(
+      { ...state, data: browserDashboard(state.data) },
+      { headers: { 'Cache-Control': 'no-store' } }
+    );
   } catch (error) {
     return apiError(error);
   }

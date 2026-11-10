@@ -1,12 +1,16 @@
 'use client';
-import { usableThumbnail } from '@/domain/post-media';
 import {
   withThumbnailOverrides,
   workspaceDisplayTime,
   type ThumbnailOverride,
 } from '@/domain/thumbnail-overrides';
 import { Input, Select, DropdownMenu, DropdownItem, Tooltip } from '@/components/ui/controls';
-import { PostGrid, postPublicViews } from './PostGrid';
+import { postPublicViews } from './PostGrid';
+import { MappingPanel } from './MappingPanel';
+import { PagedPosts } from './PagedPosts';
+import { ReviewGroups } from './ReviewGroups';
+import type { ReviewGroup } from '@/domain/review-groups';
+import { postPageSchema, type PostPage } from '@/domain/post-pages';
 import { Overview } from './Overview';
 import { postReview } from '@/domain/post-review';
 import { auditDescription, ruleDescription, ruleScopeLabels } from '@/domain/presentation';
@@ -119,16 +123,63 @@ export function Dashboard({
   );
   const [storedData, setStoredData] = useState(initial);
   const [thumbnailOverrides, setThumbnailOverrides] = useState<ThumbnailOverride[]>([]);
-  const data = withThumbnailOverrides(storedData, thumbnailOverrides, mountedAt);
+  const detailRequest = useRef(0);
+  const [detail, setDetail] = useState<{ posts: Post[]; snapshots: Snapshot[] } | null>(null),
+    [detailLoading, setDetailLoading] = useState(false);
+  const mergedData = detail
+    ? {
+        ...storedData,
+        posts: [
+          ...storedData.posts.filter((p) => !detail.posts.some((d) => d.id === p.id)),
+          ...detail.posts,
+        ],
+        snapshots: [
+          ...storedData.snapshots.filter((s) => !detail.posts.some((p) => p.id === s.post_id)),
+          ...detail.snapshots,
+        ],
+      }
+    : storedData;
+  const data = withThumbnailOverrides(mergedData, thumbnailOverrides, mountedAt);
   function applyWorkspace(next: DashboardData, asOf?: string) {
     setStoredData(next);
+    setDetail((current) =>
+      current &&
+      current.posts.every((post) =>
+        next.accounts.some(
+          (account) => account.id === post.account_id && !account.integration?.sourceErasedAt
+        )
+      )
+        ? current
+        : null
+    );
     setMountedAt((previous) => workspaceDisplayTime(previous, Date.now(), asOf));
   }
   const [view, setView] = useState<string>('Overview');
   const [postView, setPostView] = useState<'grid' | 'table'>('grid');
-  const [appId, setAppId] = useState('all');
-  const [query, setQuery] = useState('');
-  const [campaignFilter, setCampaignFilter] = useState('all');
+  const [appId, setAppIdValue] = useState('all');
+  function setAppId(value: string) {
+    setAppIdValue(value);
+    setPostPage(1);
+  }
+  const [query, setQueryValue] = useState('');
+  function setQuery(value: string) {
+    setQueryValue(value);
+    setPostPage(1);
+  }
+  const [postPage, setPostPage] = useState(1),
+    [postSize, setPostSize] = useState(24),
+    [postSort, setPostSort] = useState<'newest' | 'oldest' | 'views'>('newest');
+  const [campaignFilter, setCampaignFilterValue] = useState('all');
+  function setCampaignFilter(value: string) {
+    setCampaignFilterValue(value);
+    setPostPage(1);
+  }
+  const [statementPosts, setStatementPosts] = useState<
+    Pick<Post, 'id' | 'caption' | 'platform_post_id' | 'published_at' | 'deadline'>[]
+  >([]);
+  const [groupExclusion, setGroupExclusion] = useState<{ ids: string[]; cause: string } | null>(
+    null
+  );
   const [panel, setPanel] = useState<{ title: string; kind: string; id?: string } | null>(null);
   const [toast, setToast] = useState('');
   const [connectionUrl, setConnectionUrl] = useState('');
@@ -327,9 +378,6 @@ export function Dashboard({
         a.last_synced_at &&
         Date.parse(a.last_synced_at) < mountedAt - 26 * 3600000)
   );
-  const aggregateViews = (p: Post) => postPublicViews(data, p) ?? 0;
-  const publicViews = posts.reduce((sum, p) => sum + aggregateViews(p), 0);
-  const eligibleViews = posts.reduce((sum, p) => sum + (p.eligible_views || 0), 0);
   const selectedApp = appId === 'all' ? data.apps[0]?.id : appId;
   async function execute(command: Command, close = true) {
     if (mutation.current) throw new Error('Another change is still saving. Please wait.');
@@ -516,10 +564,66 @@ export function Dashboard({
       setError(e instanceof Error ? e.message : 'Could not queue sync.');
     }
   }
-  const open = (kind: string, title: string, id?: string) => {
+  async function open(kind: string, title: string, id?: string) {
+    const request = ++detailRequest.current;
+    setDetailLoading(false);
     setError('');
     setPanel({ kind, title, id });
-  };
+    if (!data.readModel || !id) return;
+    if (kind === 'post') {
+      setDetailLoading(true);
+      try {
+        const value = await requestJson<PostPage & { asOf: string }>(`/api/posts?postId=${id}`);
+        if (!value.posts.length)
+          throw new Error('This post is no longer available. Refresh the workspace.');
+        if (detailRequest.current !== request) return;
+        setDetail({ posts: value.posts, snapshots: value.snapshots });
+        setMountedAt((previous) => workspaceDisplayTime(previous, Date.now(), value.asOf));
+      } catch (e) {
+        if (detailRequest.current === request)
+          setError(e instanceof Error ? e.message : 'Could not load post.');
+      } finally {
+        if (detailRequest.current === request) setDetailLoading(false);
+      }
+    } else if (['statementDetail', 'bonus', 'paid', 'adjustment', 'finalize'].includes(kind)) {
+      setDetailLoading(true);
+      try {
+        const value = await requestJson<{ posts: typeof statementPosts }>(
+          `/api/statements?id=${id}`
+        );
+        if (detailRequest.current === request) setStatementPosts(value.posts);
+      } catch (e) {
+        if (detailRequest.current === request)
+          setError(e instanceof Error ? e.message : 'Could not load statement context.');
+      } finally {
+        if (detailRequest.current === request) setDetailLoading(false);
+      }
+    }
+  }
+  async function prepareGroupExclusion(group: ReviewGroup) {
+    if (preview) {
+      const ids = posts
+        .filter(
+          (p) =>
+            p.account_id === group.accountId &&
+            (group.cause === 'mapping' ? !p.campaign_id : reviewFor(p).stage === 'historical') &&
+            !isLocked(data, p)
+        )
+        .slice(0, 100)
+        .map((p) => p.id);
+      setGroupExclusion({ ids, cause: group.cause });
+    } else {
+      const selection = await requestJson<{ ids: string[]; cause: string }>(
+        `/api/review-groups?${new URLSearchParams({ app: appId, accountId: group.accountId, cause: group.cause, action: 'selection' })}`
+      );
+      if (!selection.ids.length)
+        throw new Error(
+          'No editable records remain in this group. Finalized months require linked corrections.'
+        );
+      setGroupExclusion(selection);
+    }
+    setPanel({ kind: 'excludeImported', title: 'Exclude selected imported content?' });
+  }
   const addButton = (kind: string, title: string, label: string) => (
     <AsyncButton className="button primary" onClick={() => open(kind, title)}>
       <Plus size={16} />
@@ -545,70 +649,6 @@ export function Dashboard({
     const views = postPublicViews(data, p);
     return views === null ? '—' : number(views);
   };
-  const postRow = (p: Post) => (
-    <tr key={p.id} onClick={() => open('post', 'Post details', p.id)} className="clickable">
-      <td>
-        <div className="post-title">
-          <span className={`platform-mark ${p.platform}`}>
-            {p.platform.slice(0, 2).toUpperCase()}
-          </span>
-          <div>
-            <strong>{p.caption || `Post ${p.platform_post_id}`}</strong>
-            <small>{campaignName(p.campaign_id)}</small>
-          </div>
-        </div>
-      </td>
-      <td>{creatorName(p.creator_id)}</td>
-      <td>
-        {publicCount(p)}
-        <small>public views</small>
-      </td>
-      <td>{p.eligible_views === null ? '—' : number(p.eligible_views)}</td>
-      <td>
-        <Badge
-          tone={
-            reviewFor(p).stage === 'ready'
-              ? 'green'
-              : reviewFor(p).stage === 'review'
-                ? 'amber'
-                : 'neutral'
-          }
-        >
-          {reviewFor(p).label}
-        </Badge>
-      </td>
-      <td>{p.source_erased_at ? 'Source erased' : date(p.published_at)}</td>
-      <td>
-        <ArrowUpRight size={16} />
-      </td>
-    </tr>
-  );
-  function postTable(rows: Post[]) {
-    return rows.length ? (
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Post / campaign</th>
-              <th>Creator</th>
-              <th>Views</th>
-              <th>Eligible views</th>
-              <th>Status</th>
-              <th>Published</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>{rows.map(postRow)}</tbody>
-        </table>
-      </div>
-    ) : (
-      <Empty
-        title="Your next great post starts here"
-        description="Connect a creator account or add an existing post to start tracking."
-        action={addButton('addPost', 'Add a post', 'Add post')}
-      />
-    );
-  }
   function overview() {
     return (
       <Overview
@@ -658,7 +698,11 @@ export function Dashboard({
                     <b>{data.campaigns.filter((c) => c.app_id === a.id).length}</b> campaigns
                   </span>
                   <span>
-                    <b>{data.posts.filter((p) => p.app_id === a.id).length}</b> posts
+                    <b>
+                      {data.readModel?.counts[`app:${a.id}`]?.posts ??
+                        data.posts.filter((p) => p.app_id === a.id).length}
+                    </b>{' '}
+                    posts
                   </span>
                 </div>
                 {data.campaigns
@@ -743,12 +787,22 @@ export function Dashboard({
                           .join(', ') || 'Unassigned'}
                       </td>
                       <td>{data.accounts.filter((a) => a.creator_id === c.id).length}</td>
-                      <td>{posts.filter((p) => p.creator_id === c.id).length}</td>
+                      <td>
+                        {data.readModel
+                          ? (data.readModel.counts[
+                              appId === 'all' ? `creator:${c.id}` : `creator:${c.id}:${appId}`
+                            ]?.posts ?? 0)
+                          : posts.filter((p) => p.creator_id === c.id).length}
+                      </td>
                       <td>
                         {number(
-                          posts
-                            .filter((p) => p.creator_id === c.id)
-                            .reduce((n, p) => n + (p.eligible_views || 0), 0)
+                          data.readModel
+                            ? (data.readModel.counts[
+                                appId === 'all' ? `creator:${c.id}` : `creator:${c.id}:${appId}`
+                              ]?.eligibleViews ?? 0)
+                            : posts
+                                .filter((p) => p.creator_id === c.id)
+                                .reduce((n, p) => n + (p.eligible_views || 0), 0)
                         )}
                       </td>
                       <td>
@@ -898,6 +952,20 @@ export function Dashboard({
                         )
                       )
                       .join(', ') || 'No active campaign mapping'}
+                    {!routes.length && (
+                      <span className="unmapped-account">
+                        <small>
+                          Connected accounts can track content without earning compensation. Route
+                          eligible creator content explicitly.
+                        </small>
+                        <AsyncButton
+                          className="text-button"
+                          onClick={() => open('mapping', 'Route future posts', a.id)}
+                        >
+                          Route posts
+                        </AsyncButton>
+                      </span>
+                    )}
                   </span>
                 </div>
                 {a.error && <p className="form-error account-alert">{a.error}</p>}
@@ -1108,11 +1176,7 @@ export function Dashboard({
                     publication_month: s.month,
                     accounting_timezone: accountingTimezone,
                     status: s.status,
-                    provisional_usd:
-                      s.status === 'draft'
-                        ? calculateProvisional(data, s.app_id, s.creator_id, s.month, s.policy)
-                            .payableCents / 100
-                        : null,
+                    provisional_usd: s.status === 'draft' ? provisionalUsd(s) : null,
                     base_usd: s.base_cents / 100,
                     potential_bonus_usd: s.potential_bonus_cents / 100,
                     approved_bonus_usd: (s.approved_bonus_cents || 0) / 100,
@@ -1222,76 +1286,17 @@ export function Dashboard({
           </AsyncButton>
         </div>
         <OperationsHealth preview={preview} />
-        <section className="card">
-          <div className="section-heading">
-            <h2>Posts to review</h2>
-            <Badge tone="amber">{held.length}</Badge>
-          </div>
-          <div className="review-list">
-            {held.map((p) => (
-              <article className="review-item" key={p.id}>
-                <div>
-                  <h3>{p.caption || 'Untitled post'}</h3>
-                  <p>{reviewFor(p).reason}</p>
-                  <small>{reviewFor(p).action}</small>
-                </div>
-                <AsyncButton className="button" onClick={() => open('post', 'Post details', p.id)}>
-                  Review post <ArrowUpRight size={15} />
-                </AsyncButton>
-              </article>
-            ))}
-            {!held.length && (
-              <p className="subtle">
-                No unresolved operational reviews. Automatic tracking and retries continue.
-              </p>
-            )}
-          </div>
-        </section>
-        {historical.length > 0 && (
-          <section className="card">
-            <details className="history-panel">
-              <summary>
-                Historical posts · {historical.length} · separate from operational reviews
-              </summary>
-              <p className="history-note">
-                These publications were first discovered after their tracking window. They are not
-                automatically payable and still hold the related payout draft until reviewed or
-                explicitly excluded. This does not identify them as test content automatically.
-              </p>
-              <div className="historical-toolbar">
-                {excludableHistorical.length > 0 && (
-                  <AsyncButton
-                    className="button"
-                    onClick={() => open('excludeHistorical', 'Exclude historical posts?')}
-                  >
-                    Exclude historical posts ({Math.min(100, excludableHistorical.length)})
-                  </AsyncButton>
-                )}
-              </div>
-              <div className="review-list">
-                {historical.map((p) => (
-                  <article className="review-item" key={p.id}>
-                    <div>
-                      <h3>{p.caption || 'Untitled post'}</h3>
-                      <p>{reviewFor(p).reason}</p>
-                      <small>
-                        {isLocked(data, p)
-                          ? 'This month is finalized. Use a linked correction; exclusion is blocked.'
-                          : reviewFor(p).action}
-                      </small>
-                    </div>
-                    <AsyncButton
-                      className="button"
-                      onClick={() => open('post', 'Post details', p.id)}
-                    >
-                      View post
-                    </AsyncButton>
-                  </article>
-                ))}
-              </div>
-            </details>
-          </section>
-        )}
+        <ReviewGroups
+          data={data}
+          appId={appId}
+          onPost={(id) => {
+            void open('post', 'Post details', id);
+          }}
+          onRoute={(id) => {
+            void open('mapping', 'Route future posts', id);
+          }}
+          onExclude={prepareGroupExclusion}
+        />
         <section className="card">
           <div className="section-heading">
             <h2>Accounts & sync health</h2>
@@ -1427,6 +1432,21 @@ export function Dashboard({
             <p>{review.action}</p>
           </div>
         </div>
+        {!p.app_id &&
+          !p.campaign_id &&
+          review.stage !== 'historical' &&
+          !locked &&
+          !['accepted', 'excluded'].includes(p.eligibility_status) && (
+            <AsyncButton
+              className="button"
+              onClick={() => {
+                setGroupExclusion({ ids: [p.id], cause: 'mapping' });
+                void open('excludeImported', 'Exclude unassigned post?');
+              }}
+            >
+              Exclude unassigned post
+            </AsyncButton>
+          )}
         {review.stage === 'historical' && !locked && (
           <AsyncButton
             className="button"
@@ -1442,11 +1462,22 @@ export function Dashboard({
           </div>
           <div>
             <dt>Window closes</dt>
-            <dd>{p.deadline ? formatTimestamp(p.deadline) : 'Assign campaign first'}</dd>
+            <dd>
+              {p.deadline
+                ? formatTimestamp(p.deadline)
+                : review.stage === 'historical'
+                  ? 'No campaign window assigned'
+                  : 'Assign campaign first'}
+            </dd>
           </div>
           <div>
             <dt>Review</dt>
-            <dd>{p.review_note || 'Awaiting evidence review'}</dd>
+            <dd>
+              {p.review_note ||
+                (review.stage === 'historical'
+                  ? 'Historical record · outside operational review'
+                  : 'Awaiting evidence review')}
+            </dd>
           </div>
           <div>
             <dt>Evidence reference</dt>
@@ -1569,16 +1600,25 @@ export function Dashboard({
       </div>
     );
   }
+  function provisionalUsd(statement: Statement): number | null {
+    const estimate = data.readModel
+      ? data.readModel.statementResults[statement.id]?.provisional
+      : calculateProvisional(
+          data,
+          statement.app_id,
+          statement.creator_id,
+          statement.month,
+          statement.policy
+        );
+    return estimate ? estimate.payableCents / 100 : null;
+  }
   function statementDetail(s: Statement) {
-    const provisional = calculateProvisional(data, s.app_id, s.creator_id, s.month, s.policy);
-    const result = calculateStatement(
-      data,
-      s.app_id,
-      s.creator_id,
-      s.month,
-      s.policy,
-      s.approved_bonus_cents
-    );
+    const provisional = data.readModel
+      ? data.readModel.statementResults[s.id]?.provisional
+      : calculateProvisional(data, s.app_id, s.creator_id, s.month, s.policy);
+    const result = data.readModel
+      ? data.readModel.statementResults[s.id]?.calculation
+      : calculateStatement(data, s.app_id, s.creator_id, s.month, s.policy, s.approved_bonus_cents);
     return (
       <div className="detail-body">
         <div className="detail-hero">
@@ -1587,7 +1627,7 @@ export function Dashboard({
           <p>
             {appName(s.app_id)} · Publication month {s.month}
           </p>
-          {s.status === 'draft' && (
+          {s.status === 'draft' && provisional && (
             <div className="info-box">
               <p>
                 Provisional estimate from {number(provisional.eligibleViews)} in-window views:{' '}
@@ -1636,7 +1676,7 @@ export function Dashboard({
           </div>
           <div>
             <dt>Unresolved posts</dt>
-            <dd>{result.unresolved}</dd>
+            <dd>{result?.unresolved ?? 'Unavailable'}</dd>
           </div>
           {s.payment_reference && (
             <div>
@@ -1780,7 +1820,11 @@ export function Dashboard({
             <tbody>
               {s.lines.map((l) => (
                 <tr key={l.postId}>
-                  <td>{data.posts.find((p) => p.id === l.postId)?.caption || l.postId}</td>
+                  <td>
+                    {statementPosts.find((p) => p.id === l.postId)?.caption ||
+                      data.posts.find((p) => p.id === l.postId)?.caption ||
+                      l.postId}
+                  </td>
                   <td>{l.views === null ? 'Source erased' : number(l.views)}</td>
                   <td>
                     <Money cents={l.baseCents} />
@@ -1798,6 +1842,12 @@ export function Dashboard({
   }
   function renderPanel() {
     if (!panel) return null;
+    if (detailLoading)
+      return (
+        <p className="padded" role="status">
+          Loading details…
+        </p>
+      );
     const id = panel.id;
     const p = data.posts.find((p) => p.id === id);
     const s = data.statements.find((s) => s.id === id);
@@ -1864,13 +1914,10 @@ export function Dashboard({
             account.status === 'connected' &&
             !account.archived &&
             !account.integration?.sourceErasedAt &&
-            data.posts.some(
-              (p) =>
-                p.account_id === account.id &&
-                !p.deleted &&
-                !p.source_erased_at &&
-                !usableThumbnail(p.tracking?.thumbnail, mountedAt)
-            ) && (
+            ((data.readModel?.counts[`account:${account.id}`]?.posts ?? 0) > 0 ||
+              data.posts.some(
+                (p) => p.account_id === account.id && !p.deleted && !p.source_erased_at
+              )) && (
               <div className="preview-refresh-control">
                 <AsyncButton className="button" onClick={() => loadPreviews(account.id)}>
                   <RefreshCw size={15} />
@@ -1951,6 +1998,33 @@ export function Dashboard({
       );
     }
     switch (panel.kind) {
+      case 'excludeImported':
+        return (
+          <div className="detail-body">
+            <p>
+              Exclude these {groupExclusion?.ids.length ?? 0} selected records from creator
+              compensation? This is an explicit administrator decision, not an automatic historical
+              classification. Posts, snapshots and mappings remain intact. Finalized months cannot
+              be changed.
+            </p>
+            <ConfirmationActions
+              destructive
+              label="Exclude selected records"
+              disabled={!groupExclusion?.ids.length}
+              onCancel={() => setPanel(null)}
+              onConfirm={() =>
+                execute({
+                  type:
+                    groupExclusion?.cause === 'historical'
+                      ? 'excludeHistoricalPosts'
+                      : 'excludeUnattributedPosts',
+                  postIds: groupExclusion?.ids ?? [],
+                  note: 'Imported content explicitly excluded from the creator compensation program by administrator.',
+                })
+              }
+            />
+          </div>
+        );
       case 'excludeHistorical': {
         const selection = (id ? data.posts.filter((p) => p.id === id) : excludableHistorical)
           .filter((p) => reviewFor(p).stage === 'historical' && !isLocked(data, p))
@@ -2168,37 +2242,7 @@ export function Dashboard({
           })
         );
       case 'mapping':
-        return form(
-          [
-            { ...selectField('accountId', 'Social account', accountOptions), value: id },
-            selectField(
-              'membershipId',
-              'Creator campaign assignment',
-              data.memberships.map((m) =>
-                option(m.id, `${creatorName(m.creator_id)} · ${campaignName(m.campaign_id)}`)
-              )
-            ),
-            {
-              name: 'startsAt',
-              label: 'Effective from',
-              type: 'text',
-              value: localTime(),
-            },
-            {
-              name: 'endsAt',
-              label: 'Effective until (optional)',
-              type: 'text',
-              required: false,
-            },
-          ],
-          (v) => ({
-            type: 'mapAccount',
-            accountId: v.accountId,
-            membershipId: v.membershipId,
-            startsAt: iso(v.startsAt),
-            endsAt: v.endsAt ? iso(v.endsAt) : null,
-          })
-        );
+        return <MappingPanel data={data} accountId={id} onSave={execute} />;
       case 'addPost':
         return form(
           [
@@ -2481,14 +2525,15 @@ export function Dashboard({
               selectField(
                 'postId',
                 'Original post',
-                data.posts
-                  .filter(
-                    (p) =>
-                      p.app_id === s.app_id &&
-                      p.creator_id === s.creator_id &&
-                      publicationMonth(p.published_at) === s.month
-                  )
-                  .map((p) => option(p.id, p.caption || p.platform_post_id))
+                (data.readModel
+                  ? statementPosts
+                  : data.posts.filter(
+                      (p) =>
+                        p.app_id === s.app_id &&
+                        p.creator_id === s.creator_id &&
+                        publicationMonth(p.published_at) === s.month
+                    )
+                ).map((p) => option(p.id, p.caption || p.platform_post_id))
               ),
               {
                 name: 'eligibleViews',
@@ -2519,8 +2564,12 @@ export function Dashboard({
               note: v.note,
               evidence: {
                 reference: v.evidenceReference,
-                windowStart: data.posts.find((p) => p.id === v.postId)!.published_at,
-                windowEnd: data.posts.find((p) => p.id === v.postId)!.deadline!,
+                windowStart: (data.readModel ? statementPosts : data.posts).find(
+                  (p) => p.id === v.postId
+                )!.published_at,
+                windowEnd: (data.readModel ? statementPosts : data.posts).find(
+                  (p) => p.id === v.postId
+                )!.deadline!,
                 organicConfirmed: v.organicConfirmed === 'yes',
                 cutoffConfirmed: v.cutoffConfirmed === 'yes',
               },
@@ -2686,7 +2735,10 @@ export function Dashboard({
             >
               <Icon size={18} />
               <span>{label}</span>
-              {label === 'Needs attention' && held.length > 0 && <em>{held.length}</em>}
+              {label === 'Needs attention' &&
+                (data.readModel?.overview[appId]?.reviews ?? held.length) > 0 && (
+                  <em>{data.readModel?.overview[appId]?.reviews ?? held.length}</em>
+                )}
             </AsyncButton>
           ))}
         </nav>
@@ -2744,6 +2796,7 @@ export function Dashboard({
               <Search size={16} />
               <Input
                 aria-label="Search workspace"
+                maxLength={200}
                 placeholder="Search names, accounts, or posts…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -2829,9 +2882,9 @@ export function Dashboard({
               <div className="info-box">
                 <Clapperboard size={18} />
                 <p>
-                  {number(publicViews)} public views · {number(eligibleViews)} verified eligible
-                  views · {posts.length} posts. Click a post to see history, campaign attribution,
-                  and eligibility evidence.
+                  Public view counts are observations, not organic eligibility proof. Campaign
+                  filters match explicit post attribution; unassigned records remain visible under
+                  All apps.
                 </p>
               </div>
               <section className="card">
@@ -2869,18 +2922,42 @@ export function Dashboard({
                         </option>
                       ))}
                     </Select>
+                    <Select
+                      aria-label="Sort posts"
+                      value={postSort}
+                      onChange={(e) => {
+                        setPostSort(e.target.value as typeof postSort);
+                        setPostPage(1);
+                      }}
+                    >
+                      <option value="newest">Newest first</option>
+                      <option value="oldest">Oldest first</option>
+                      <option value="views">Public views ↓</option>
+                    </Select>
                   </div>
                 </div>
-                {postView === 'grid' ? (
-                  <PostGrid
-                    data={data}
-                    posts={posts}
-                    now={mountedAt}
-                    onOpen={(post) => open('post', 'Post details', post.id)}
-                  />
-                ) : (
-                  postTable(posts)
-                )}
+                <PagedPosts
+                  data={data}
+                  query={postPageSchema.parse({
+                    page: postPage,
+                    pageSize: postSize,
+                    app: appId,
+                    campaign: campaignFilter,
+                    search: query,
+                    sort: postSort,
+                  })}
+                  view={postView}
+                  now={mountedAt}
+                  onPage={setPostPage}
+                  onSize={(size) => {
+                    setPostSize(size);
+                    setPostPage(1);
+                  }}
+                  onOpen={(post) => {
+                    void open('post', 'Post details', post.id);
+                  }}
+                  overrides={thumbnailOverrides}
+                />
               </section>
             </>
           )}
@@ -2894,9 +2971,13 @@ export function Dashboard({
         <Drawer
           compact={
             panel.kind.startsWith('manage-') ||
-            ['finalize', 'disconnect', 'recordOptions-creator', 'excludeHistorical'].includes(
-              panel.kind
-            )
+            [
+              'finalize',
+              'disconnect',
+              'recordOptions-creator',
+              'excludeHistorical',
+              'excludeImported',
+            ].includes(panel.kind)
           }
           title={
             panel.kind.startsWith('manage-')
@@ -2909,7 +2990,7 @@ export function Dashboard({
           }
           description={
             panel.kind.startsWith('manage-') ||
-            ['disconnect', 'finalize', 'excludeHistorical'].includes(panel.kind)
+            ['disconnect', 'finalize', 'excludeHistorical', 'excludeImported'].includes(panel.kind)
               ? 'Review the consequences before confirming.'
               : undefined
           }
@@ -2977,7 +3058,11 @@ function ImportPanel({
         <Download size={15} />
         Download template
       </AsyncButton>
-      <p className="subtle">{kind === 'posts' ? 'Account references:' : 'Post references:'}</p>
+      <p className="subtle">
+        {kind === 'posts'
+          ? 'Account references:'
+          : 'Recent post references (copy other IDs from post details):'}
+      </p>
       <div className="reference-list">
         {(kind === 'posts'
           ? data.accounts.map((a) => ({ id: a.id, label: `${a.platform} @${a.username}` }))

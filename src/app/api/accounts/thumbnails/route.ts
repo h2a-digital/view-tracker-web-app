@@ -1,3 +1,4 @@
+import { browserDashboard } from '@/domain/read-model';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { requireAdmin, requireSameOrigin } from '@/lib/server/supabase';
@@ -72,7 +73,7 @@ export async function POST(request: Request) {
     if (persist && overrides.length) await saveDashboard(data, current.revision);
     return NextResponse.json(
       {
-        data,
+        data: browserDashboard(data),
         asOf,
         overrides,
         result: {

@@ -1,7 +1,8 @@
 'use client';
+import { useEffect, useState } from 'react';
+import { requestJson } from '@/lib/client/request';
 import type { DashboardData, Post } from '@/domain/model';
-import { performanceReport } from '@/domain/analytics';
-import { postReview } from '@/domain/post-review';
+import { overviewSummary } from '@/domain/read-model';
 import { PostGrid } from './PostGrid';
 import { Avatar, Money, number } from './Primitives';
 import { AsyncButton } from './AsyncButton';
@@ -30,65 +31,61 @@ export function Overview({
   onNavigate: (view: string) => void;
   onOpenPost: (post: Post) => void;
 }) {
-  const report = performanceReport(data, { app: appId });
-  const nowIso = new Date(now).toISOString();
-  const scope = data.posts.filter((p) => appId === 'all' || p.app_id === appId);
-  const reviews = scope.filter((p) => postReview(data, p, nowIso).stage === 'review');
-  const historical = scope.filter((p) => postReview(data, p, nowIso).stage === 'historical');
-  const active = data.creators.filter(
-    (c) =>
-      !c.archived &&
-      data.memberships.some(
-        (m) =>
-          m.creator_id === c.id &&
-          Date.parse(m.starts_at) <= now &&
-          (!m.ends_at || Date.parse(m.ends_at) > now) &&
-          data.campaigns.some(
-            (campaign) =>
-              campaign.id === m.campaign_id &&
-              campaign.status === 'active' &&
-              (appId === 'all' || campaign.app_id === appId) &&
-              !data.apps.find((a) => a.id === campaign.app_id)?.archived
-          )
-      )
-  );
-  const statements = data.statements.filter((s) => appId === 'all' || s.app_id === appId);
-  const approved = statements
-    .filter((s) => s.status === 'finalized')
-    .reduce((n, s) => n + s.payable_cents, 0);
-  const visibleRows = report.rows.filter(
-    (r) =>
-      !query ||
-      `${r.post.caption} ${r.post.platform} ${r.post.platform_post_id} ${data.creators.find((c) => c.id === r.post.creator_id)?.name || ''}`
-        .toLowerCase()
-        .includes(query.toLowerCase())
-  );
-  const ranked = [...new Set(visibleRows.map((r) => r.post.creator_id))]
-    .map((id) => {
-      const rows = visibleRows.filter((r) => r.post.creator_id === id);
-      return {
-        id,
-        name: data.creators.find((c) => c.id === id)?.name || 'Unknown creator',
-        views: rows.reduce((n, r) => n + (r.publicViews ?? 0), 0),
-        observed: rows.filter((r) => r.publicViews !== null).length,
-        posts: rows.length,
-      };
-    })
-    .filter((c) => c.observed > 0)
-    .sort((a, b) => b.views - a.views || a.name.localeCompare(b.name))
-    .slice(0, 3);
-  const platformRows = [...new Set(visibleRows.map((r) => r.post.platform))]
-    .map((platform) => {
-      const rows = visibleRows.filter((r) => r.post.platform === platform);
-      return {
-        platform,
-        views: rows.reduce((total, row) => total + (row.publicViews ?? 0), 0),
-        observed: rows.filter((r) => r.publicViews !== null).length,
-        posts: rows.length,
-      };
-    })
-    .sort((a, b) => b.views - a.views || a.platform.localeCompare(b.platform));
-  const platformTotal = platformRows.reduce((sum, row) => sum + row.views, 0);
+  const [searched, setSearched] = useState<{
+      key: string;
+      summary: ReturnType<typeof overviewSummary>;
+    } | null>(null),
+    [searchError, setSearchError] = useState('');
+  const searchKey = JSON.stringify([appId, query]),
+    remote = !!data.readModel,
+    generation = data.readModel?.generatedAt;
+  useEffect(() => {
+    if (!remote || !query) return;
+    const controller = new AbortController(),
+      timeout = setTimeout(() => {
+        controller.abort();
+        setSearchError('Overview request timed out. Refresh to retry.');
+      }, 25000),
+      timer = setTimeout(() => {
+        requestJson<{ summary: ReturnType<typeof overviewSummary> }>(
+          `/api/overview?${new URLSearchParams({ app: appId, search: query })}`,
+          { signal: controller.signal }
+        )
+          .then((value) => {
+            if (!controller.signal.aborted) {
+              setSearched({ key: searchKey, summary: value.summary });
+              setSearchError('');
+            }
+          })
+          .catch((e) => {
+            if (!controller.signal.aborted) setSearchError(e.message);
+          })
+          .finally(() => clearTimeout(timeout));
+      }, 250);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+      clearTimeout(timeout);
+    };
+  }, [remote, searchKey, appId, query, generation]);
+  const base = data.readModel?.overview[appId];
+  const summary =
+    remote && query
+      ? searched?.key === searchKey
+        ? searched.summary
+        : { ...base!, ranked: [], recent: [], platformRows: [] }
+      : (base ?? overviewSummary(data, appId, query, now));
+  const {
+    report,
+    reviews,
+    historical,
+    active,
+    approved,
+    ranked,
+    recent,
+    platformRows,
+    platformTotal,
+  } = summary;
   const platformNames = {
     tiktok: 'TikTok',
     instagram: 'Instagram',
@@ -101,10 +98,6 @@ export function Overview({
     youtube: Clapperboard,
     facebook: Globe,
   };
-  const recent = [...visibleRows]
-    .sort((a, b) => b.post.published_at.localeCompare(a.post.published_at))
-    .slice(0, 3)
-    .map((r) => r.post);
   return (
     <>
       <div className="page-heading">
@@ -124,7 +117,7 @@ export function Overview({
           </div>
           <strong>{number(report.publicViews)}</strong>
           <small>
-            Public observations · {report.observed}/{report.rows.length} posts covered
+            Public observations · {report.observed}/{report.postCount} posts covered
           </small>
         </div>
         <div className="stat-card">
@@ -132,7 +125,7 @@ export function Overview({
             <span>Active creators</span>
             <Users size={16} />
           </div>
-          <strong>{active.length}</strong>
+          <strong>{active}</strong>
           <small>Current active campaign assignments</small>
         </div>
         <div className="stat-card">
@@ -140,11 +133,11 @@ export function Overview({
             <span>Pending reviews</span>
             <ClipboardCheck size={16} />
           </div>
-          <strong>{reviews.length}</strong>
+          <strong>{reviews}</strong>
           <small>
-            {historical.length
-              ? `${historical.length} historical posts kept separately`
-              : 'Unresolved eligibility or data quality'}
+            {historical
+              ? `Issue groups · ${historical} historical posts kept separately`
+              : 'Account issue groups · eligibility or data quality'}
           </small>
           <AsyncButton className="text-button" onClick={() => onNavigate('Needs attention')}>
             Open review queue <ArrowUpRight size={14} />
@@ -164,6 +157,14 @@ export function Overview({
           </AsyncButton>
         </div>
       </div>
+      {searchError && (
+        <p className="form-error" role="alert">
+          {searchError}
+        </p>
+      )}
+      {remote && query && searched?.key !== searchKey && !searchError && (
+        <p role="status">Searching publications…</p>
+      )}
       <div className="overview-comparison">
         <section className="card overview-summary-card">
           <div className="section-heading">
@@ -243,7 +244,13 @@ export function Overview({
             All posts <ArrowUpRight size={15} />
           </AsyncButton>
         </div>
-        <PostGrid compact data={data} posts={recent} now={now} onOpen={onOpenPost} />
+        <PostGrid
+          compact
+          data={{ ...data, snapshots: summary.recentSnapshots }}
+          posts={recent}
+          now={now}
+          onOpen={onOpenPost}
+        />
       </section>
     </>
   );
