@@ -1,3 +1,6 @@
+vi.mock('@/services/profiles/metadata', () => ({
+  refreshProfile: vi.fn().mockResolvedValue({ status: 'cached', processed: false }),
+}));
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   rpc: vi.fn(),
@@ -14,6 +17,7 @@ vi.mock('@/lib/server/supabase', () => ({
 vi.mock('@/repositories/dashboard', () => ({ loadDashboard: mocks.load }));
 vi.mock('@/services/tracking/sync', () => ({ synchronizeAccount: mocks.sync }));
 vi.mock('@/services/tracking/zernio', () => ({
+  zernioInstagramEnabled: () => process.env.ZERNIO_INSTAGRAM_ENABLED === 'true',
   ZernioProvider: class {
     constructor(deadline: number) {
       mocks.provider(deadline);
@@ -233,4 +237,29 @@ describe('authenticated scheduled worker', () => {
     expect((await GET()).status).toBe(401);
     expect(mocks.database).not.toHaveBeenCalled();
   });
+});
+
+it('skips disabled Zernio Instagram without synchronizing, while leaving connected accounts untouched', async () => {
+  vi.stubEnv('ZERNIO_INSTAGRAM_ENABLED', 'false');
+  mocks.load.mockResolvedValue({
+    data: {
+      accounts: [{ id: 'account', status: 'connected', provider: 'zernio', platform: 'instagram' }],
+    },
+    revision: 3,
+  });
+  const result = await POST(request());
+  expect(result.status).toBe(200);
+  expect((await result.json()).skipped).toBe('zernio_instagram_disabled');
+  expect(mocks.sync).not.toHaveBeenCalled();
+});
+
+it('refreshes a due profile separately from video jobs without changing tracking success', async () => {
+  const { refreshProfile } = await import('@/services/profiles/metadata');
+  vi.mocked(refreshProfile).mockResolvedValueOnce({ status: 'unavailable', processed: true });
+  const response = await POST(request());
+  const body = await response.json();
+  expect(response.status).toBe(200);
+  expect(body.success).toBe(true);
+  expect(body.profileMetadata.status).toBe('unavailable');
+  expect(mocks.sync).toHaveBeenCalledOnce();
 });

@@ -1,6 +1,10 @@
 # Creator Ledger
 
-Private UGC operations dashboard for multiple apps. Next.js App Router, React, TypeScript, Supabase PostgreSQL/Auth, and a replaceable Zernio TikTok adapter. No public signup, subscriptions, or payment processing.
+Private UGC operations dashboard for multiple apps. Next.js App Router, React, TypeScript, Supabase PostgreSQL/Auth, and a replaceable Zernio TikTok/Instagram adapter. No public signup, subscriptions, or payment processing.
+
+Automatic avatars and profile refresh: [social profile rollout](docs/social-profiles.md), including migration `202611090003_social_profiles.sql` after the already-applied YouTube metadata migration.
+
+Dashboard UX, channel identity refresh and safe record management: see [deployment notes](docs/dashboard-ux.md). Apply the optional `202611090001_dashboard_management.sql` migration on schema 5 before deploying this version; it does not delete existing records.
 
 ## Deploy the existing project
 
@@ -66,6 +70,8 @@ Auth checks both the configured email and the allowlisted Auth UUID on every pro
 
 ## Free Zernio TikTok pilot
 
+Instagram/Zernio is also available behind `ZERNIO_INSTAGRAM_ENABLED=false` (default). See [the minimal Instagram pilot and validation steps](docs/zernio-instagram.md). Existing Meta connections remain unchanged.
+
 Read [`docs/zernio-verification.md`](docs/zernio-verification.md) first. Current documentation includes analytics on its usage-based free allowance; older legacy plans can still return an analytics add-on gate.
 
 1. Create the new Zernio account using its **two-account, no-card allowance**. Do not enter a card or buy an analytics add-on. Generate an API key and set only `ZERNIO_API_KEY` on the server.
@@ -129,3 +135,11 @@ The imported app's App Router/TypeScript/Tailwind structure and path aliases rem
 The existing dedicated Supabase project, administrator and Free Zernio connection are reused. Remaining production steps: Netlify Free hosting configured by the administrator, canonical HTTPS domain, production environment variables, the existing operations migration if not already applied, and Supabase Vault/Cron configuration. No service was purchased or deployed and no live database was changed during deployment preparation. Passing local tests does not establish production uptime, provider entitlement, organic verification or historical API completeness.
 
 Direct-provider source lifecycle, revocation/deletion callbacks, retention safeguards and the exact safe cutover order are documented in [the production rollout checklist](docs/production-rollout.md). No live migrations or deployment have been performed.
+
+Dashboard component-system changes, Analytics definitions, avatar diagnostics, and the local visual testing checklist are documented in [Product experience and Analytics](docs/product-experience.md). That component-system/Analytics iteration added no migration or environment variable; the subsequent Post previews update below adds a separate cache-retention migration. Earlier management/profile migrations remain prerequisites.
+
+Post Grid/Table views, provider thumbnail fields, loading-button behavior and the separate thumbnail-cache retention migration are documented in [Post previews](docs/post-previews.md).
+
+The [operational dashboard follow-up](docs/operational-dashboard.md) covers the verified TikTok preview diagnosis, automatic media backfill, compact Overview, readable audit history and explicit historical-post exclusion. It requires no additional migration beyond the earlier thumbnail-retention prerequisite.
+
+[Local preview refresh](docs/local-preview-refresh.md) explains how to load missing video previews immediately without a local worker or writes to the shared Supabase project, plus the compact Overview summary cards.

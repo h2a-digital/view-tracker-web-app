@@ -261,13 +261,11 @@ it.each([true, false])(
             }
           : null,
     }));
-    const fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify(success ? { success: true } : { error: { code: 10 } }), {
-          status: success ? 200 : 400,
-        })
-      );
+    const fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(success ? { success: true } : { error: { code: 10 } }), {
+        status: success ? 200 : 400,
+      })
+    );
     vi.stubGlobal('fetch', fetch);
     await processRevocation(db, Date.now() + 10000);
     expect(fetch.mock.calls[0][0]).toContain(
@@ -284,3 +282,33 @@ it.each([true, false])(
     );
   }
 );
+
+it('refreshes channel title, handle and avatar from the existing daily identity request', async () => {
+  mocks.request
+    .mockResolvedValueOnce({
+      items: [
+        {
+          id: 'channel',
+          snippet: {
+            title: 'Atalaya',
+            customUrl: '@atalaya',
+            thumbnails: { default: { url: 'https://yt3.ggpht.com/avatar' } },
+          },
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ items: [] });
+  await checkSources(db, Date.now() + 10000);
+  expect(mocks.request.mock.calls[0][0]).toContain('channels?part=id,snippet&mine=true');
+  expect(mocks.rpc).toHaveBeenCalledWith(
+    'store_channel_identity',
+    expect.objectContaining({
+      expected_channel: 'channel',
+      identity: expect.objectContaining({
+        title: 'Atalaya',
+        handle: '@atalaya',
+        avatarUrl: 'https://yt3.ggpht.com/avatar',
+      }),
+    })
+  );
+});

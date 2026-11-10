@@ -1,5 +1,7 @@
 # Zernio free allowance: implementation decision
 
+**Update November 9, 2026:** the optional [Instagram/Zernio pilot](zernio-instagram.md) now supports one TikTok plus one Instagram account within these two slots. It defaults off. The original TikTok-only implementation decision below is retained as historical verification context.
+
 Documentation checked November 7, 2026. This is a **documentation-backed integration**, not a live-account entitlement test. No Zernio account/key or connected creator was available.
 
 | Requirement                            | Documented capability / implementation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |

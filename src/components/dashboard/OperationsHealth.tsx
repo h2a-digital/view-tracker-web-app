@@ -1,4 +1,5 @@
 'use client';
+import { AsyncButton } from './AsyncButton';
 import { useEffect, useState } from 'react';
 import { formatTimestamp } from '@/domain/time';
 type Health = {
@@ -33,12 +34,15 @@ type Health = {
   cronRuns: { status: string; start_time: string }[];
 };
 export function OperationsHealth({ preview }: { preview: boolean }) {
+  const [loading, setLoading] = useState(!preview);
   const [health, setHealth] = useState<Health | null>(null);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     if (preview) return;
     const controller = new AbortController();
+    let disposed = false;
+    const timeout = setTimeout(() => controller.abort(), 20000);
     fetch('/api/operations', { cache: 'no-store', signal: controller.signal })
       .then(async (response) => {
         const data = await response.json();
@@ -47,9 +51,20 @@ export function OperationsHealth({ preview }: { preview: boolean }) {
         setError('');
       })
       .catch((error) => {
-        if (!controller.signal.aborted) setError(error.message);
+        if (!disposed)
+          setError(
+            controller.signal.aborted ? 'Health check timed out. Try again.' : error.message
+          );
+      })
+      .finally(() => {
+        clearTimeout(timeout);
+        if (!disposed) setLoading(false);
       });
-    return () => controller.abort();
+    return () => {
+      disposed = true;
+      clearTimeout(timeout);
+      controller.abort();
+    };
   }, [preview, refresh]);
   const latest = health?.invocations[0];
   const stale =
@@ -59,9 +74,17 @@ export function OperationsHealth({ preview }: { preview: boolean }) {
     <section className="card">
       <div className="section-heading">
         <h2>Automation health</h2>
-        <button className="button" onClick={() => setRefresh((v) => v + 1)} disabled={preview}>
+        <AsyncButton
+          className="button"
+          busy={loading}
+          onClick={() => {
+            setLoading(true);
+            setRefresh((v) => v + 1);
+          }}
+          disabled={preview}
+        >
           Check now
-        </button>
+        </AsyncButton>
       </div>
       <div className="padded subtle">
         {preview ? (
@@ -69,7 +92,11 @@ export function OperationsHealth({ preview }: { preview: boolean }) {
         ) : error ? (
           <p role="alert">{error}</p>
         ) : !health ? (
-          <p>Checking worker and scheduler…</p>
+          <div role="status" aria-label="Loading automation health">
+            <div className="skeleton skeleton-line" />
+            <div className="skeleton skeleton-line" />
+            <p>Checking worker and scheduler…</p>
+          </div>
         ) : (
           <>
             {health.configurationIssues.map((issue) => (

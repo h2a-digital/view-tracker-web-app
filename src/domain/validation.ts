@@ -148,6 +148,15 @@ export const commandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('addSnapshot'), input: snapshotInputSchema }),
   z.object({ type: z.literal('attributePost'), postId: id, campaignId: id }),
   z.object({
+    type: z.literal('excludeHistoricalPosts'),
+    postIds: z
+      .array(id)
+      .min(1)
+      .max(100)
+      .refine((values) => new Set(values).size === values.length, 'Select each post once.'),
+    note: z.string().trim().min(5).max(4000),
+  }),
+  z.object({
     type: z.literal('reviewPost'),
     postId: id,
     decision: z.enum(['accepted', 'excluded']),

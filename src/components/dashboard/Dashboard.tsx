@@ -1,4 +1,18 @@
 'use client';
+import { usableThumbnail } from '@/domain/post-media';
+import {
+  withThumbnailOverrides,
+  workspaceDisplayTime,
+  type ThumbnailOverride,
+} from '@/domain/thumbnail-overrides';
+import { Input, Select, DropdownMenu, DropdownItem, Tooltip } from '@/components/ui/controls';
+import { PostGrid, postPublicViews } from './PostGrid';
+import { Overview } from './Overview';
+import { postReview } from '@/domain/post-review';
+import { auditDescription, ruleDescription, ruleScopeLabels } from '@/domain/presentation';
+import { Analytics } from './Analytics';
+import { AsyncButton } from './AsyncButton';
+import { requestJson } from '@/lib/client/request';
 import { OperationsHealth } from './OperationsHealth';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -10,7 +24,7 @@ import {
 } from '@/domain/time';
 import { trackingState } from '@/domain/tracking';
 import { calculateProvisional, isLocked } from '@/domain/compensation';
-import { useState, type ReactNode } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   LayoutDashboard,
   Layers,
@@ -18,13 +32,14 @@ import {
   Users,
   Link2,
   Clapperboard,
+  Grid2X2,
+  Table2,
   Wallet,
   Settings2,
   TriangleAlert,
   Plus,
   ArrowUpRight,
   Search,
-  ChevronDown,
   Download,
   RefreshCw,
   LogOut,
@@ -32,9 +47,15 @@ import {
   Menu,
   GitBranch,
   ExternalLink,
+  MoreHorizontal,
+  Archive,
+  Trash2,
+  Camera,
+  Globe,
+  Music2,
 } from 'lucide-react';
 import Papa from 'papaparse';
-import type { DashboardData, Post, Statement, Snapshot } from '@/domain/model';
+import type { DashboardData, Post, Statement, Snapshot, SocialAccount } from '@/domain/model';
 import { platforms } from '@/domain/model';
 import { runCommand } from '@/domain/commands';
 import {
@@ -44,11 +65,22 @@ import {
   resolveRules,
 } from '@/domain/compensation';
 import type { Command } from '@/domain/validation';
-import { Drawer, Badge, Empty, Money, number, date, Avatar } from './Primitives';
+import {
+  Drawer,
+  ConfirmationActions,
+  Badge,
+  Empty,
+  Money,
+  number,
+  date,
+  Avatar,
+  AccountAvatar,
+} from './Primitives';
 import { FormPanel, type Field } from './FormPanel';
 import { RulesEditor } from './RulesEditor';
 const nav = [
   ['Overview', LayoutDashboard],
+  ['Analytics', GitBranch],
   ['Apps & campaigns', Layers],
   ['Creators', Users],
   ['Social accounts', Link2],
@@ -60,16 +92,6 @@ const nav = [
 const localTime = (value = new Date().toISOString()) => instant(value);
 const iso = (value: string) => instant(value);
 const option = (value: string, label: string) => ({ value, label });
-const latest = (d: DashboardData, p: Post) =>
-  d.snapshots
-    .filter(
-      (s) =>
-        s.post_id === p.id &&
-        s.metric !== 'paid_views' &&
-        s.provenance?.kind !== 'daily' &&
-        !s.provenance?.supporting
-    )
-    .sort((a, b) => b.observed_at.localeCompare(a.observed_at))[0];
 function download(name: string, rows: Record<string, unknown>[]) {
   const url = URL.createObjectURL(
     new Blob([Papa.unparse(rows)], { type: 'text/csv;charset=utf-8' })
@@ -83,14 +105,27 @@ function download(name: string, rows: Record<string, unknown>[]) {
 export function Dashboard({
   initial,
   preview = false,
+  thumbnailPreviewOnly = false,
+  initialAsOf,
 }: {
   initial: DashboardData;
   preview?: boolean;
+  thumbnailPreviewOnly?: boolean;
+  initialAsOf?: string;
 }) {
   const router = useRouter();
-  const [mountedAt, setMountedAt] = useState(() => new Date().getTime());
-  const [data, setData] = useState(initial);
+  const [mountedAt, setMountedAt] = useState(() =>
+    workspaceDisplayTime(0, new Date().getTime(), initialAsOf)
+  );
+  const [storedData, setStoredData] = useState(initial);
+  const [thumbnailOverrides, setThumbnailOverrides] = useState<ThumbnailOverride[]>([]);
+  const data = withThumbnailOverrides(storedData, thumbnailOverrides, mountedAt);
+  function applyWorkspace(next: DashboardData, asOf?: string) {
+    setStoredData(next);
+    setMountedAt((previous) => workspaceDisplayTime(previous, Date.now(), asOf));
+  }
   const [view, setView] = useState<string>('Overview');
+  const [postView, setPostView] = useState<'grid' | 'table'>('grid');
   const [appId, setAppId] = useState('all');
   const [query, setQuery] = useState('');
   const [campaignFilter, setCampaignFilter] = useState('all');
@@ -98,6 +133,19 @@ export function Dashboard({
   const [toast, setToast] = useState('');
   const [connectionUrl, setConnectionUrl] = useState('');
   const [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const mutation = useRef(false);
+  const [disconnectImpact, setDisconnectImpact] = useState<
+    { id: string; platform: string; username: string }[]
+  >([]);
+  const [sharedConfirmed, setSharedConfirmed] = useState(false);
+  const [queued, setQueued] = useState<Record<string, number>>({});
+  const [showArchived, setShowArchived] = useState(false);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(''), 6500);
+    return () => clearTimeout(timer);
+  }, [toast]);
   const [menu, setMenu] = useState(false);
   const appName = (id: string | null) => data.apps.find((a) => a.id === id)?.name || 'Unassigned';
   const creatorName = (id: string) =>
@@ -106,12 +154,13 @@ export function Dashboard({
     data.campaigns.find((c) => c.id === id)?.name || 'Needs assignment';
   const campaignOptions = data.campaigns
     .filter((c) => appId === 'all' || c.app_id === appId)
+    .filter((c) => c.status !== 'archived' && !data.apps.find((a) => a.id === c.app_id)?.archived)
     .map((c) => option(c.id, `${appName(c.app_id)} · ${c.name}`));
-  const creatorOptions = data.creators.map((c) => option(c.id, c.name));
-  const appOptions = data.apps.map((a) => option(a.id, a.name));
-  const accountOptions = data.accounts.map((a) =>
-    option(a.id, `${creatorName(a.creator_id)} · ${a.platform} @${a.username}`)
-  );
+  const creatorOptions = data.creators.filter((c) => !c.archived).map((c) => option(c.id, c.name));
+  const appOptions = data.apps.filter((a) => !a.archived).map((a) => option(a.id, a.name));
+  const accountOptions = data.accounts
+    .filter((a) => !a.archived)
+    .map((a) => option(a.id, `${creatorName(a.creator_id)} · ${a.platform} ${accountTitle(a)}`));
   const posts = data.posts.filter(
     (p) =>
       (appId === 'all' || p.app_id === appId) &&
@@ -126,65 +175,185 @@ export function Dashboard({
   const campaigns = data.campaigns.filter((c) => appId === 'all' || c.app_id === appId);
   const creators = data.creators.filter(
     (c) =>
+      (showArchived || !c.archived) &&
       (appId === 'all' ||
         data.memberships.some(
           (m) => m.creator_id === c.id && campaigns.some((x) => x.id === m.campaign_id)
         )) &&
       (!query || `${c.name} ${c.email}`.toLowerCase().includes(query.toLowerCase()))
   );
-  const scopedCreators = new Set(creators.map((c) => c.id));
-  const accounts = data.accounts.filter((a) => scopedCreators.has(a.creator_id));
-  const statements = data.statements.filter((s) => appId === 'all' || s.app_id === appId);
-  const held = posts.filter((p) => {
-    const state = trackingState(data, p, new Date(mountedAt).toISOString());
-    if (p.eligibility_status === 'accepted' && !p.review_evidence && !isLocked(data, p))
-      return true;
+  const scopedCreators = new Set(
+    data.creators
+      .filter(
+        (c) =>
+          (showArchived || !c.archived) &&
+          (appId === 'all' ||
+            data.memberships.some(
+              (m) =>
+                m.creator_id === c.id && campaigns.some((campaign) => campaign.id === m.campaign_id)
+            ))
+      )
+      .map((c) => c.id)
+  );
+  const accounts = data.accounts.filter(
+    (a) =>
+      scopedCreators.has(a.creator_id) &&
+      (showArchived || !a.archived) &&
+      (!query ||
+        `${accountTitle(a)} ${a.username} ${creatorName(a.creator_id)}`
+          .toLowerCase()
+          .includes(query.toLowerCase()))
+  );
+  function accountProfile(a: SocialAccount) {
+    const channel = a.platform === 'youtube' ? a.integration?.channelIdentity : undefined;
+    return channel
+      ? {
+          name: channel.title,
+          username: channel.handle?.replace(/^@/, ''),
+          avatarUrl: channel.avatarUrl,
+          refreshedAt: channel.refreshedAt,
+        }
+      : a.integration?.profileMetadata;
+  }
+  function accountTitle(a: SocialAccount) {
     return (
-      !['accepted', 'excluded'].includes(p.eligibility_status) &&
-      (state.status !== 'active' ||
-        state.issues.some((i) =>
-          [
-            'campaign_unassigned',
-            'counter_missing',
-            'provider_stale',
-            'refresh_failed',
-            'provider_policy_blocked',
-            'shorts_classification_unverified',
-            'not_a_short',
-          ].includes(i)
-        ))
+      accountProfile(a)?.name ||
+      (a.platform === 'youtube'
+        ? 'YouTube channel'
+        : `@${accountProfile(a)?.username || a.username}`)
     );
-  });
+  }
+  function recordMenu(
+    entity: 'app' | 'campaign' | 'creator' | 'account',
+    id: string,
+    archived = false
+  ) {
+    return (
+      <DropdownMenu
+        trigger={
+          <button type="button" className="icon-button" aria-label={`Manage ${entity}`}>
+            <MoreHorizontal size={18} />
+          </button>
+        }
+      >
+        {entity === 'creator' && (
+          <DropdownItem onSelect={() => open('creatorDetail', 'Edit creator', id)}>
+            <Settings2 size={15} />
+            Edit creator
+          </DropdownItem>
+        )}
+        <DropdownItem
+          onSelect={() =>
+            open(
+              `manage-${archived ? 'restore' : 'archive'}-${entity}`,
+              archived ? 'Restore record' : 'Archive record',
+              id
+            )
+          }
+        >
+          <Archive size={15} />
+          {archived ? 'Restore' : 'Archive'}
+        </DropdownItem>
+        <DropdownItem
+          destructive
+          onSelect={() => open(`manage-remove-${entity}`, 'Remove unused record', id)}
+        >
+          <Trash2 size={15} />
+          Remove unused {entity}
+        </DropdownItem>
+      </DropdownMenu>
+    );
+  }
+
+  async function manage(entity: string, id: string, operation: string) {
+    if (preview) {
+      setToast('Record removal and archival are disabled in local preview.');
+      return;
+    }
+    if (mutation.current) return;
+    mutation.current = true;
+    setError('');
+    setToast('');
+    try {
+      const result = await requestJson<{ data: DashboardData }>('/api/manage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity, id, operation }),
+      });
+      applyWorkspace(result.data);
+      setPanel(null);
+      setToast(
+        operation === 'remove'
+          ? 'Unused record removed'
+          : operation === 'restore'
+            ? 'Record restored'
+            : 'Record archived; history retained'
+      );
+      if (entity === 'app' && operation === 'remove' && id === appId) setAppId('all');
+    } finally {
+      mutation.current = false;
+    }
+  }
+  async function prepareDisconnect(a: SocialAccount) {
+    setSharedConfirmed(false);
+    setDisconnectImpact([]);
+    if (a.provider === 'direct' && !preview) {
+      const result = await requestJson<{ accounts: typeof disconnectImpact }>(
+        `/api/manage?accountId=${encodeURIComponent(a.id)}`
+      );
+      setDisconnectImpact(result.accounts);
+    }
+    open('disconnect', 'Disconnect account', a.id);
+  }
+  useEffect(() => {
+    if (preview || !Object.keys(queued).length) return;
+    const timer = setInterval(() => {
+      void refresh(true);
+    }, 30000);
+    return () => clearInterval(timer);
+    // Poll only while an administrator-requested sync is pending.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queued, preview]);
+  const statements = data.statements.filter((s) => appId === 'all' || s.app_id === appId);
+  const reviewFor = (p: Post) => postReview(data, p, new Date(mountedAt).toISOString());
+  const held = posts.filter((p) => reviewFor(p).stage === 'review');
+  const historical = posts.filter((p) => reviewFor(p).stage === 'historical');
+  const excludableHistorical = historical.filter((p) => !isLocked(data, p));
   const problems = accounts.filter(
     (a) =>
-      a.status !== 'connected' ||
+      a.status === 'attention' ||
       a.error ||
-      !a.last_synced_at ||
-      new Date(a.last_synced_at).getTime() < mountedAt - 86400000
+      (a.status === 'connected' &&
+        a.last_synced_at &&
+        Date.parse(a.last_synced_at) < mountedAt - 26 * 3600000)
   );
-  const aggregateViews = (p: Post) =>
-    data.accounts.find((a) => a.id === p.account_id)?.integration?.payoutsBlocked
-      ? 0
-      : (p.tracking?.lastViews ?? latest(data, p)?.views ?? 0);
+  const aggregateViews = (p: Post) => postPublicViews(data, p) ?? 0;
   const publicViews = posts.reduce((sum, p) => sum + aggregateViews(p), 0);
   const eligibleViews = posts.reduce((sum, p) => sum + (p.eligible_views || 0), 0);
   const selectedApp = appId === 'all' ? data.apps[0]?.id : appId;
   async function execute(command: Command, close = true) {
+    if (mutation.current) throw new Error('Another change is still saving. Please wait.');
+    mutation.current = true;
     setError('');
-    if (preview) {
-      setData(runCommand(data, command, 'preview administrator'));
-    } else {
-      const r = await fetch('/api/dashboard', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(command),
-      });
-      const v = await r.json();
-      if (!r.ok) throw new Error(v.error);
-      setData(v.data);
+    setToast('');
+    try {
+      let notice: string | undefined;
+      if (preview) {
+        applyWorkspace(runCommand(data, command, 'preview administrator'));
+      } else {
+        const v = await requestJson<{ data: DashboardData; notice?: string }>('/api/dashboard', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(command),
+        });
+        applyWorkspace(v.data, 'asOf' in v ? (v.asOf as string) : undefined);
+        notice = v.notice;
+      }
+      if (close) setPanel(null);
+      setToast(notice || 'Changes saved');
+    } finally {
+      mutation.current = false;
     }
-    if (close) setPanel(null);
-    setToast('Changes saved');
   }
   async function action(command: Command) {
     try {
@@ -200,51 +369,148 @@ export function Dashboard({
       );
       return;
     }
+    setError('');
+    setToast('');
     try {
-      const r = await fetch('/api/connections', {
+      const v = await requestJson<{ authUrl?: string }>('/api/connections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountId: id, action }),
+        body: JSON.stringify({ accountId: id, action, confirmShared: sharedConfirmed }),
       });
-      const v = await r.json();
-      if (!r.ok) throw new Error(v.error);
       if (v.authUrl) {
         setConnectionUrl(v.authUrl);
-        open('authorization', 'Authorize social account tracking', id);
+        open(
+          action === 'deletion-link' ? 'deletionLink' : 'authorization',
+          action === 'deletion-link'
+            ? 'Private source-deletion link'
+            : 'Authorize social account tracking',
+          id
+        );
         return;
       }
-      await refresh();
       setPanel(null);
       setToast('Account disconnected');
+      await refresh(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Connection failed.');
     }
   }
-  async function refresh() {
-    setMountedAt(new Date().getTime());
+  async function refresh(silent = false) {
     if (preview) return;
+    if (!silent) setRefreshing(true);
     try {
-      const r = await fetch('/api/dashboard', { cache: 'no-store' });
-      const v = await r.json();
-      if (!r.ok) throw new Error(v.error);
-      setData(v.data);
+      const v = await requestJson<{ data: DashboardData; asOf?: string }>('/api/dashboard', {
+        cache: 'no-store',
+      });
+      applyWorkspace(v.data, 'asOf' in v ? (v.asOf as string) : undefined);
+      setError('');
+      const completed = Object.keys(queued).filter(
+        (id) =>
+          Date.parse(v.data.accounts.find((a) => a.id === id)?.last_synced_at || '') >= queued[id]
+      );
+      const expired = Object.keys(queued).filter((id) => Date.now() - queued[id] > 5 * 60000);
+      if (completed.length || expired.length) {
+        setQueued((current) =>
+          Object.fromEntries(
+            Object.entries(current).filter(
+              ([id]) => !completed.includes(id) && !expired.includes(id)
+            )
+          )
+        );
+        setToast(
+          completed.length
+            ? 'Synchronization finished. Check diagnostics for errors and metric freshness.'
+            : 'Sync has not been confirmed yet. Check Automation health before retrying.'
+        );
+      } else if (!silent) setToast('Workspace refreshed');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Refresh failed.');
+    } finally {
+      setRefreshing(false);
     }
+  }
+  async function refreshProfileDetails(accountId: string) {
+    if (preview) {
+      setToast('Preview does not call profile APIs.');
+      return;
+    }
+    setError('');
+    setToast('');
+    const result = await requestJson<{ data: DashboardData; result: { status: string } }>(
+      '/api/accounts/profile',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId }),
+      }
+    );
+    applyWorkspace(result.data);
+    if (result.result.status === 'updated') setToast('Profile details updated');
+    else if (result.result.status === 'cached')
+      setToast('Profile was checked recently or is already refreshing. Please wait a minute.');
+    else
+      setError(
+        'Profile refresh is temporarily unavailable. Cached details were retained; automatic retries continue.'
+      );
+  }
+  async function loadPreviews(accountId: string) {
+    if (preview) {
+      setToast('Preview does not call external APIs.');
+      return;
+    }
+    setError('');
+    setToast('');
+    const response = await requestJson<{
+      data: DashboardData;
+      asOf: string;
+      overrides: ThumbnailOverride[];
+      result: {
+        mode: 'session' | 'database';
+        available: number;
+        requested: number;
+        unavailable: number;
+        deferred: boolean;
+      };
+    }>('/api/accounts/thumbnails', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId }),
+    });
+    if (response.result.mode === 'session')
+      setThumbnailOverrides((current) => [
+        ...current.filter(
+          (value) => !response.overrides.some((incoming) => incoming.postId === value.postId)
+        ),
+        ...response.overrides,
+      ]);
+    applyWorkspace(response.data, response.asOf);
+    if (response.result.available)
+      setToast(
+        `${response.result.available} previews loaded${response.result.mode === 'session' ? ' for this page only; shared Supabase was not changed' : ' and saved'}.${response.result.unavailable ? ` ${response.result.unavailable} remain unavailable.` : ''}`
+      );
+    else if (!response.result.requested) setToast('All available previews are already cached.');
+    else
+      setError(
+        response.result.deferred
+          ? 'Preview refresh was deferred. Try again shortly.'
+          : 'The provider did not supply usable previews. Existing images were preserved.'
+      );
   }
   async function sync(id: string) {
     if (preview) {
       setToast('Preview does not call external APIs.');
       return;
     }
+    setError('');
+    setToast('');
+    const requestedAt = Date.now();
     try {
-      const r = await fetch('/api/tracking', {
+      await requestJson('/api/tracking', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ accountId: id }),
       });
-      const v = await r.json();
-      if (!r.ok) throw new Error(v.error);
+      setQueued((current) => ({ ...current, [id]: requestedAt }));
       setToast('Sync queued. The background worker will collect new posts and metrics.');
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not queue sync.');
@@ -255,20 +521,30 @@ export function Dashboard({
     setPanel({ kind, title, id });
   };
   const addButton = (kind: string, title: string, label: string) => (
-    <button className="button primary" onClick={() => open(kind, title)}>
+    <AsyncButton className="button primary" onClick={() => open(kind, title)}>
       <Plus size={16} />
       {label}
-    </button>
+    </AsyncButton>
   );
   const nameField = (label = 'Name'): Field => ({ name: 'name', label });
   const selectField = (
     name: string,
     label: string,
     options: { value: string; label: string }[]
-  ): Field => ({ name, label, type: 'select', options });
+  ): Field => ({
+    name,
+    label,
+    type: 'select',
+    options,
+    required: !options.some((o) => o.value === ''),
+  });
   function form(fields: Field[], fn: (v: Record<string, string>) => Command, label?: string) {
     return <FormPanel fields={fields} submitLabel={label} onSubmit={async (v) => execute(fn(v))} />;
   }
+  const publicCount = (p: Post) => {
+    const views = postPublicViews(data, p);
+    return views === null ? '—' : number(views);
+  };
   const postRow = (p: Post) => (
     <tr key={p.id} onClick={() => open('post', 'Post details', p.id)} className="clickable">
       <td>
@@ -284,27 +560,21 @@ export function Dashboard({
       </td>
       <td>{creatorName(p.creator_id)}</td>
       <td>
-        {number(p.tracking?.lastViews ?? latest(data, p)?.views ?? 0)}
+        {publicCount(p)}
         <small>public views</small>
       </td>
       <td>{p.eligible_views === null ? '—' : number(p.eligible_views)}</td>
       <td>
         <Badge
           tone={
-            p.eligibility_status === 'accepted'
+            reviewFor(p).stage === 'ready'
               ? 'green'
-              : p.eligibility_status === 'excluded'
-                ? 'neutral'
-                : p.eligibility_status === 'review'
-                  ? 'amber'
-                  : 'purple'
+              : reviewFor(p).stage === 'review'
+                ? 'amber'
+                : 'neutral'
           }
         >
-          {p.eligibility_status === 'tracking' &&
-          p.deadline &&
-          p.deadline < new Date().toISOString()
-            ? 'Review due'
-            : p.eligibility_status}
+          {reviewFor(p).label}
         </Badge>
       </td>
       <td>{p.source_erased_at ? 'Source erased' : date(p.published_at)}</td>
@@ -341,152 +611,14 @@ export function Dashboard({
   }
   function overview() {
     return (
-      <>
-        <div className="welcome-line">
-          <div>
-            <span className="eyebrow">YOUR WORKSPACE AT A GLANCE</span>
-            <h1>Every creator. Every opportunity.</h1>
-            <p>A clear view of your creator partnerships and what comes next.</p>
-          </div>
-          <div className="period-chip">
-            All tracked publications <ChevronDown size={14} />
-          </div>
-        </div>
-        <div className="info-box">
-          <p>
-            Provisional planning estimate:{' '}
-            <Money
-              cents={statements
-                .filter((s) => s.status === 'draft')
-                .reduce(
-                  (n, s) =>
-                    n +
-                    calculateProvisional(data, s.app_id, s.creator_id, s.month, s.policy)
-                      .payableCents,
-                  0
-                )}
-            />
-            . Based only on observed in-window counts. Organic eligibility, exact cutoff evidence,
-            bonus approval and final payout approval remain required.
-          </p>
-        </div>
-        <div className="stats-grid">
-          {[
-            ['Public views', number(publicViews), 'Across your tracked posts', Clapperboard],
-            [
-              'Verified eligible views',
-              number(eligibleViews),
-              'Reviewed for organic eligibility',
-              Check,
-            ],
-            [
-              'Active creators',
-              String(creators.length),
-              `${accounts.length} registered social accounts`,
-              Users,
-            ],
-            [
-              'Awaiting payment',
-              <Money
-                key="money"
-                cents={statements
-                  .filter((s) => s.status === 'finalized')
-                  .reduce((a, s) => a + s.payable_cents, 0)}
-              />,
-              'Finalized, ready for external payment',
-              Wallet,
-            ],
-          ].map(([label, value, caption, Icon]) => {
-            const I = Icon as typeof Wallet;
-            return (
-              <div className="stat-card" key={String(label)}>
-                <div>
-                  <span>{label as string}</span>
-                  <I size={17} />
-                </div>
-                <strong>{value as ReactNode}</strong>
-                <small>{caption as string}</small>
-              </div>
-            );
-          })}
-        </div>
-        <div className="overview-grid">
-          <section className="card performance-card">
-            <div className="section-heading">
-              <div>
-                <h2>Performance by platform</h2>
-                <p>
-                  Totals are provisional. Policy-blocked YouTube accounts are omitted from aggregate
-                  figures.
-                </p>
-              </div>
-              <span className="subtle">{posts.length} posts</span>
-            </div>
-            <div className="platform-chart">
-              {platforms.map((platform) => {
-                const v = posts
-                  .filter((p) => p.platform === platform)
-                  .reduce((sum, p) => sum + aggregateViews(p), 0);
-                return (
-                  <div className="platform-bar-row" key={platform}>
-                    <div>
-                      <span className={`platform-mark ${platform}`}>
-                        {platform.slice(0, 2).toUpperCase()}
-                      </span>
-                      <span className="capitalize">{platform}</span>
-                      <b>{number(v)}</b>
-                    </div>
-                    <div className="bar-track">
-                      <span
-                        style={{
-                          width: `${publicViews ? Math.max(1, (v / publicViews) * 100) : 0}%`,
-                        }}
-                        className={platform}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-          <section className="card attention-card">
-            <div className="section-heading">
-              <h2>A little attention goes a long way</h2>
-              <TriangleAlert size={19} />
-            </div>
-            <div className="attention-number">
-              {held.length + problems.length}
-              <span>items to review</span>
-            </div>
-            <p>Keep your data complete and your creator payouts accurate.</p>
-            <button className="button soft" onClick={() => setView('Needs attention')}>
-              Review your queue <ArrowUpRight size={16} />
-            </button>
-            <div className="attention-mini">
-              <span>Posts awaiting review</span>
-              <b>{held.length}</b>
-            </div>
-            <div className="attention-mini">
-              <span>Accounts needing attention</span>
-              <b>{problems.length}</b>
-            </div>
-          </section>
-        </div>
-        <section className="card">
-          <div className="section-heading">
-            <div>
-              <h2>Recent posts</h2>
-              <p>New content from your creator network.</p>
-            </div>
-            <button className="text-button" onClick={() => setView('Posts & performance')}>
-              View all posts <ArrowUpRight size={15} />
-            </button>
-          </div>
-          {postTable(
-            [...posts].sort((a, b) => b.published_at.localeCompare(a.published_at)).slice(0, 5)
-          )}
-        </section>
-      </>
+      <Overview
+        data={data}
+        appId={appId}
+        query={query}
+        now={mountedAt}
+        onNavigate={setView}
+        onOpenPost={(post) => open('post', 'Post details', post.id)}
+      />
     );
   }
   function appsView() {
@@ -504,7 +636,7 @@ export function Dashboard({
         </div>
         <div className="app-grid">
           {data.apps
-            .filter((a) => appId === 'all' || a.id === appId)
+            .filter((a) => (showArchived || !a.archived) && (appId === 'all' || a.id === appId))
             .map((a) => (
               <section className="card app-card" key={a.id}>
                 <div className="app-card-heading">
@@ -513,12 +645,13 @@ export function Dashboard({
                     <h2>{a.name}</h2>
                     <small>{a.archived ? 'Archived' : 'Active app'}</small>
                   </div>
-                  <button
+                  <AsyncButton
                     className="text-button"
                     onClick={() => open('editApp', 'Manage app', a.id)}
                   >
                     Manage
-                  </button>
+                  </AsyncButton>
+                  {recordMenu('app', a.id, a.archived)}
                 </div>
                 <div className="app-metrics">
                   <span>
@@ -531,18 +664,20 @@ export function Dashboard({
                 {data.campaigns
                   .filter((c) => c.app_id === a.id)
                   .map((c) => (
-                    <button
-                      key={c.id}
-                      className="campaign-row"
-                      onClick={() => open('editCampaign', 'Manage campaign', c.id)}
-                    >
-                      <Megaphone size={16} />
-                      <span>{c.name}</span>
-                      <Badge tone={c.status === 'active' ? 'green' : 'neutral'}>{c.status}</Badge>
-                      <ArrowUpRight size={15} />
-                    </button>
+                    <div key={c.id} className="campaign-row">
+                      <AsyncButton
+                        className="campaign-open"
+                        onClick={() => open('editCampaign', 'Manage campaign', c.id)}
+                      >
+                        <Megaphone size={16} />
+                        <span>{c.name}</span>
+                        <Badge tone={c.status === 'active' ? 'green' : 'neutral'}>{c.status}</Badge>
+                        <ArrowUpRight size={15} />
+                      </AsyncButton>
+                      {recordMenu('campaign', c.id, c.status === 'archived')}
+                    </div>
                   ))}
-                <button
+                <AsyncButton
                   className="text-button"
                   onClick={() => {
                     setAppId(a.id);
@@ -551,7 +686,7 @@ export function Dashboard({
                 >
                   <Plus size={15} />
                   Add campaign
-                </button>
+                </AsyncButton>
               </section>
             ))}
         </div>
@@ -590,7 +725,7 @@ export function Dashboard({
                     <tr
                       key={c.id}
                       className="clickable"
-                      onClick={() => open('creatorDetail', c.name, c.id)}
+                      onClick={() => open('creatorDetail', `Edit ${c.name}`, c.id)}
                     >
                       <td>
                         <div className="person">
@@ -617,7 +752,9 @@ export function Dashboard({
                         )}
                       </td>
                       <td>
-                        <ArrowUpRight size={17} />
+                        <div onClick={(e) => e.stopPropagation()}>
+                          {recordMenu('creator', c.id, !!c.archived)}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -640,128 +777,197 @@ export function Dashboard({
       <>
         <div className="page-heading">
           <div>
+            <span className="eyebrow">CREATOR CONNECTIONS</span>
             <h1>Social accounts</h1>
-            <p>Connect once. Keep up with every new post.</p>
+            <p>Account health, campaign routing and tracking in one place.</p>
           </div>
           <div className="button-group">
             {addButton('mapping', 'Map account to campaign', 'Route posts')}
             {addButton('account', 'Register social account', 'Add account')}
           </div>
         </div>
-        <div className="info-box">
-          <Link2 size={19} />
-          <p>
-            TikTok uses Zernio’s two-account free allowance. YouTube, Instagram and Facebook use
-            direct read-only APIs. New Instagram connections require a Professional (Creator or
-            Business) account and access to its business portfolio; no Facebook Page is needed. Meta
-            Unified Login includes a required messaging permission, which Creator Ledger does not
-            use. Existing Facebook-based Instagram connections and Facebook Pages keep their current
-            login. Provider credentials, approval and a verified metrics pilot are required before
-            production use.
-          </p>
+        <div className="account-summary">
+          <span>
+            <b>{accounts.length}</b> accounts
+          </span>
+          <span className="status-good">
+            <b>{accounts.filter((a) => a.status === 'connected' && !a.error).length}</b> connected
+          </span>
+          <span>
+            <b>{accounts.filter((a) => a.error || a.status === 'attention').length}</b> need
+            attention
+          </span>
+          <span>Automatic discovery · Daily snapshots</span>
         </div>
         <div className="account-grid">
-          {accounts.map((a) => (
-            <section className="card account-card" key={a.id}>
-              <div className="account-card-top">
-                <span className={`platform-mark ${a.platform}`}>
-                  {a.platform.slice(0, 2).toUpperCase()}
-                </span>
-                <Badge
-                  tone={
-                    a.status === 'connected'
-                      ? 'green'
-                      : a.status === 'attention'
-                        ? 'amber'
-                        : 'neutral'
-                  }
-                >
-                  {a.status}
-                </Badge>
-              </div>
-              <h2>@{a.username}</h2>
-              <p>
-                {creatorName(a.creator_id)} · <span className="capitalize">{a.platform}</span>
-              </p>
-              <dl>
-                <div>
-                  <dt>Managed by</dt>
-                  <dd>
-                    {a.provider === 'zernio'
-                      ? 'Zernio'
-                      : a.provider === 'direct'
-                        ? 'Official API'
-                        : 'Manual / CSV'}
-                  </dd>
+          {accounts.map((a) => {
+            const identity = accountProfile(a);
+            const Icon = {
+              youtube: Clapperboard,
+              instagram: Camera,
+              tiktok: Music2,
+              facebook: Globe,
+            }[a.platform];
+            const routes = data.mappings.filter(
+              (m) =>
+                m.account_id === a.id &&
+                m.starts_at <= new Date(mountedAt).toISOString() &&
+                (!m.ends_at || Date.parse(m.ends_at) > mountedAt)
+            );
+            return (
+              <section
+                className={`card account-card ${a.archived ? 'is-archived' : ''}`}
+                key={a.id}
+              >
+                <div className="account-card-top">
+                  <span className={`platform-label ${a.platform}`}>
+                    <Icon size={15} />
+                    {a.platform === 'youtube'
+                      ? 'YouTube'
+                      : a.platform === 'tiktok'
+                        ? 'TikTok'
+                        : a.platform === 'instagram'
+                          ? 'Instagram'
+                          : 'Facebook'}
+                  </span>
+                  <div className="button-group">
+                    <Badge
+                      tone={
+                        a.archived
+                          ? 'neutral'
+                          : a.status === 'connected'
+                            ? 'green'
+                            : a.status === 'attention'
+                              ? 'amber'
+                              : 'neutral'
+                      }
+                    >
+                      {a.archived ? 'archived' : a.status}
+                    </Badge>
+                    {recordMenu('account', a.id, !!a.archived)}
+                  </div>
                 </div>
-                <div>
-                  <dt>Last sync</dt>
-                  <dd>{a.last_synced_at ? date(a.last_synced_at) : 'Not synced yet'}</dd>
+                <div className="account-identity">
+                  <AccountAvatar
+                    key={`${identity?.avatarUrl}:${identity?.refreshedAt}`}
+                    name={accountTitle(a)}
+                    src={identity?.avatarUrl || undefined}
+                    platform={a.platform}
+                  />
+                  <div>
+                    <AsyncButton
+                      className="account-name"
+                      onClick={() => open('accountDetail', 'Account details', a.id)}
+                    >
+                      {accountTitle(a)}
+                    </AsyncButton>
+                    <p>
+                      {identity?.username ? `@${identity.username}` : creatorName(a.creator_id)}
+                      {identity?.username ? ` · ${creatorName(a.creator_id)}` : ''}
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <dt>Routing</dt>
-                  <dd>
-                    {data.mappings.filter((m) => m.account_id === a.id).length} campaign mapping(s)
-                  </dd>
+                <dl className="account-facts">
+                  <div>
+                    <dt>Provider</dt>
+                    <dd>
+                      {a.provider === 'zernio'
+                        ? 'Zernio'
+                        : a.provider === 'direct'
+                          ? 'Official API'
+                          : 'Manual / CSV'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Last synchronization</dt>
+                    <dd>
+                      {a.last_synced_at
+                        ? formatTimestamp(a.last_synced_at)
+                        : 'Not synchronized yet'}
+                    </dd>
+                  </div>
+                </dl>
+                <div className="account-routing">
+                  <GitBranch size={14} />
+                  <span>
+                    {routes
+                      .map((m) =>
+                        campaignName(
+                          data.memberships.find((x) => x.id === m.membership_id)?.campaign_id ||
+                            null
+                        )
+                      )
+                      .join(', ') || 'No active campaign mapping'}
+                  </span>
                 </div>
-              </dl>
-              {a.error && <p className="form-error">{a.error}</p>}
-              {a.provider === 'direct' && a.status !== 'disconnected' && (
-                <button className="button soft" onClick={() => connection(a.id, 'deletion-link')}>
-                  Creator deletion link
-                </button>
-              )}
-              {a.provider === 'direct' && (
-                <p className="subtle">
-                  Disconnect deletes source data and revokes access. Other accounts sharing the
-                  provider grant may also disconnect.
-                </p>
-              )}
-              {a.integration?.payoutsBlocked && (
-                <p className="form-error">
-                  {a.integration.policyReason ||
-                    'Provider policy approval required before compensation.'}
-                </p>
-              )}
-              <div className="button-group">
-                {a.provider !== 'manual' &&
-                  (a.status === 'connected' ? (
-                    <>
-                      <button className="button soft" onClick={() => sync(a.id)}>
-                        <RefreshCw size={14} />
-                        Sync
-                      </button>
-                      <button
-                        className="text-button"
-                        onClick={() => open('disconnect', 'Disconnect account', a.id)}
-                      >
-                        Disconnect
-                      </button>
-                    </>
-                  ) : (
-                    <button className="button soft" onClick={() => connection(a.id, 'connect')}>
-                      Connect {a.platform}
-                      <ExternalLink size={14} />
-                    </button>
-                  ))}
-                <button
-                  className="text-button"
-                  onClick={() => open('mapping', 'Map account to campaign', a.id)}
-                >
-                  Route posts
-                  <ArrowUpRight size={14} />
-                </button>
-              </div>
-            </section>
-          ))}
+                {a.error && <p className="form-error account-alert">{a.error}</p>}
+                {a.integration?.payoutsBlocked && (
+                  <p className="account-alert subtle">
+                    {a.integration.policyReason || 'Compensation policy approval required.'}
+                  </p>
+                )}
+                {queued[a.id] && (
+                  <p className="sync-status" role="status">
+                    Sync queued · Waiting for the background worker. This page checks for
+                    completion.
+                  </p>
+                )}
+                {!a.archived && (
+                  <div className="account-actions">
+                    {a.provider !== 'manual' &&
+                      (a.status === 'connected' ? (
+                        <>
+                          <AsyncButton
+                            className="button soft"
+                            disabled={!!queued[a.id]}
+                            onClick={() => sync(a.id)}
+                          >
+                            <RefreshCw size={14} />
+                            {queued[a.id] ? 'Queued' : 'Sync'}
+                          </AsyncButton>
+                          <AsyncButton className="text-button" onClick={() => prepareDisconnect(a)}>
+                            Disconnect
+                          </AsyncButton>
+                        </>
+                      ) : (
+                        <AsyncButton
+                          className="button primary"
+                          onClick={() => connection(a.id, 'connect')}
+                        >
+                          <Link2 size={14} />
+                          Connect
+                        </AsyncButton>
+                      ))}
+                    <AsyncButton
+                      className="text-button"
+                      onClick={() => open('accountDetail', 'Account details', a.id)}
+                    >
+                      Details
+                      <ArrowUpRight size={14} />
+                    </AsyncButton>
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
         {!accounts.length && (
           <Empty
-            title="Connect your creator’s world"
-            description="Register an account to connect TikTok or start recording observations."
+            title="No accounts to show"
+            description="Register an account, or include archived records using the toolbar."
             action={addButton('account', 'Register social account', 'Add account')}
           />
         )}
+        <details className="connection-help">
+          <summary>Account requirements and data handling</summary>
+          <p>
+            TikTok and Instagram can use Zernio’s two-account free allowance. Instagram needs a
+            Professional Creator or Business account. Existing Meta and YouTube integrations stay
+            available. Connection permission does not grant dashboard access. Disconnecting direct
+            providers erases API source data and may affect shared grants; review the confirmation
+            first.
+          </p>
+        </details>
       </>
     );
   }
@@ -836,45 +1042,47 @@ export function Dashboard({
             })}
         </div>
         <section className="card">
-          <div className="section-heading">
-            <div>
-              <h2>Rule version history</h2>
-              <p>Every version is retained. Existing posts keep their original rules.</p>
+          <details className="history-panel">
+            <summary>Rule version history</summary>
+            <p className="history-note">
+              Every version is retained. Published posts keep their original rules.
+            </p>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>App</th>
+                    <th>Scope</th>
+                    <th>Applies to</th>
+                    <th>Effective</th>
+                    <th>Overrides</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.ruleVersions
+                    .filter((r) => appId === 'all' || r.app_id === appId)
+                    .sort((a, b) => b.effective_at.localeCompare(a.effective_at))
+                    .map((r) => (
+                      <tr key={r.id}>
+                        <td>{appName(r.app_id)}</td>
+                        <td className="capitalize">
+                          {ruleScopeLabels[r.scope] || 'Compensation override'}
+                        </td>
+                        <td>
+                          {r.creator_id
+                            ? creatorName(r.creator_id)
+                            : r.campaign_id
+                              ? campaignName(r.campaign_id)
+                              : 'All creators'}
+                        </td>
+                        <td>{formatTimestamp(r.effective_at)}</td>
+                        <td className="rule-change-summary">{ruleDescription(r.patch)}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
             </div>
-          </div>
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>App</th>
-                  <th>Scope</th>
-                  <th>Applies to</th>
-                  <th>Effective</th>
-                  <th>Overrides</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.ruleVersions
-                  .filter((r) => appId === 'all' || r.app_id === appId)
-                  .sort((a, b) => b.effective_at.localeCompare(a.effective_at))
-                  .map((r) => (
-                    <tr key={r.id}>
-                      <td>{appName(r.app_id)}</td>
-                      <td className="capitalize">{r.scope.replaceAll('_', ' ')}</td>
-                      <td>
-                        {r.creator_id
-                          ? creatorName(r.creator_id)
-                          : r.campaign_id
-                            ? campaignName(r.campaign_id)
-                            : 'All creators'}
-                      </td>
-                      <td>{date(r.effective_at)}</td>
-                      <td>{Object.keys(r.patch).join(', ') || 'Inherit all'}</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
+          </details>
         </section>
       </>
     );
@@ -888,7 +1096,7 @@ export function Dashboard({
             <p>From verified performance to confident payments.</p>
           </div>
           <div className="button-group">
-            <button
+            <AsyncButton
               className="button"
               onClick={() =>
                 download(
@@ -916,7 +1124,7 @@ export function Dashboard({
             >
               <Download size={15} />
               Export CSV
-            </button>
+            </AsyncButton>
             {addButton('statement', 'Generate monthly statement', 'Generate statement')}
           </div>
         </div>
@@ -1008,10 +1216,10 @@ export function Dashboard({
             <h1>Needs attention</h1>
             <p>Resolve missing data and keep your payouts on track.</p>
           </div>
-          <button className="button" onClick={refresh}>
+          <AsyncButton className="button" onClick={() => refresh()}>
             <RefreshCw size={16} />
             Refresh
-          </button>
+          </AsyncButton>
         </div>
         <OperationsHealth preview={preview} />
         <section className="card">
@@ -1019,18 +1227,71 @@ export function Dashboard({
             <h2>Posts to review</h2>
             <Badge tone="amber">{held.length}</Badge>
           </div>
-          <div className="padded subtle">
+          <div className="review-list">
             {held.map((p) => (
-              <p key={p.id}>
-                {p.caption || p.platform_post_id}:{' '}
-                {trackingState(data, p, new Date(mountedAt).toISOString())
-                  .issues.join(', ')
-                  .replaceAll('_', ' ')}
-              </p>
+              <article className="review-item" key={p.id}>
+                <div>
+                  <h3>{p.caption || 'Untitled post'}</h3>
+                  <p>{reviewFor(p).reason}</p>
+                  <small>{reviewFor(p).action}</small>
+                </div>
+                <AsyncButton className="button" onClick={() => open('post', 'Post details', p.id)}>
+                  Review post <ArrowUpRight size={15} />
+                </AsyncButton>
+              </article>
             ))}
+            {!held.length && (
+              <p className="subtle">
+                No unresolved operational reviews. Automatic tracking and retries continue.
+              </p>
+            )}
           </div>
-          {postTable(held)}
         </section>
+        {historical.length > 0 && (
+          <section className="card">
+            <details className="history-panel">
+              <summary>
+                Historical posts · {historical.length} · separate from operational reviews
+              </summary>
+              <p className="history-note">
+                These publications were first discovered after their tracking window. They are not
+                automatically payable and still hold the related payout draft until reviewed or
+                explicitly excluded. This does not identify them as test content automatically.
+              </p>
+              <div className="historical-toolbar">
+                {excludableHistorical.length > 0 && (
+                  <AsyncButton
+                    className="button"
+                    onClick={() => open('excludeHistorical', 'Exclude historical posts?')}
+                  >
+                    Exclude historical posts ({Math.min(100, excludableHistorical.length)})
+                  </AsyncButton>
+                )}
+              </div>
+              <div className="review-list">
+                {historical.map((p) => (
+                  <article className="review-item" key={p.id}>
+                    <div>
+                      <h3>{p.caption || 'Untitled post'}</h3>
+                      <p>{reviewFor(p).reason}</p>
+                      <small>
+                        {isLocked(data, p)
+                          ? 'This month is finalized. Use a linked correction; exclusion is blocked.'
+                          : reviewFor(p).action}
+                      </small>
+                    </div>
+                    <AsyncButton
+                      className="button"
+                      onClick={() => open('post', 'Post details', p.id)}
+                    >
+                      View post
+                    </AsyncButton>
+                  </article>
+                ))}
+              </div>
+            </details>
+          </section>
+        )}
         <section className="card">
           <div className="section-heading">
             <h2>Accounts & sync health</h2>
@@ -1049,14 +1310,14 @@ export function Dashboard({
                       : 'Account needs connection or uses manual imports.')}
                 </p>
               </div>
-              <button
+              <AsyncButton
                 className="button"
                 onClick={() => {
                   setView('Social accounts');
                 }}
               >
                 Manage
-              </button>
+              </AsyncButton>
             </div>
           ))}
           {!problems.length && (
@@ -1090,19 +1351,21 @@ export function Dashboard({
           )}
         </section>
         <section className="card">
-          <div className="section-heading">
-            <h2>Activity log</h2>
-          </div>
-          {data.audit.slice(0, 15).map((a) => (
-            <div className="activity-row" key={a.id}>
-              <span className="activity-dot" />
-              <div>
-                <strong>{a.action.replace(/([A-Z])/g, ' $1')}</strong>
-                <p>{a.detail}</p>
+          <details className="history-panel">
+            <summary>Workspace history</summary>
+            {data.audit.slice(0, 15).map((a) => (
+              <div className="activity-row" key={a.id}>
+                <span className="activity-dot" />
+                <div>
+                  <strong>{auditDescription(a, data)}</strong>
+                  {['reviewPost', 'approveBonus', 'excludeHistoricalPosts'].includes(a.action) && (
+                    <p>{a.detail}</p>
+                  )}
+                </div>
+                <small>{date(a.created_at)}</small>
               </div>
-              <small>{date(a.created_at)}</small>
-            </div>
-          ))}
+            ))}
+          </details>
         </section>
       </>
     );
@@ -1118,8 +1381,13 @@ export function Dashboard({
         s.creator_id === p.creator_id &&
         s.month === publicationMonth(p.published_at)
     );
-    const max = Math.max(1, ...observations.map((s) => s.views));
+    const chartObservations = observations.filter(
+      (s) =>
+        s.metric === 'public_views' && s.provenance?.kind !== 'daily' && !s.provenance?.supporting
+    );
+    const max = Math.max(1, ...chartObservations.map((s) => s.views));
     const tracking = trackingState(data, p, new Date(mountedAt).toISOString());
+    const review = reviewFor(p);
     return (
       <div className="detail-body">
         <div className="detail-hero">
@@ -1139,7 +1407,7 @@ export function Dashboard({
         <div className="detail-stats">
           <div>
             <small>Public views</small>
-            <b>{number(p.tracking?.lastViews ?? latest(data, p)?.views ?? 0)}</b>
+            <b>{publicCount(p)}</b>
           </div>
           <div>
             <small>Eligible views</small>
@@ -1153,13 +1421,20 @@ export function Dashboard({
           </div>
         </div>
         <div className="info-box">
-          <TriangleAlert size={18} />
-          <p>
-            Public views include unverified traffic. Accept an evidence-backed organic total for the{' '}
-            {p.rules?.windowDays || 'configured'}-day window; daily snapshots cannot prove an exact
-            cutoff total.
-          </p>
+          <div>
+            <strong>{review.label}</strong>
+            <p>{review.reason}</p>
+            <p>{review.action}</p>
+          </div>
         </div>
+        {review.stage === 'historical' && !locked && (
+          <AsyncButton
+            className="button"
+            onClick={() => open('excludeHistorical', 'Exclude historical post?', p.id)}
+          >
+            Exclude historical post
+          </AsyncButton>
+        )}
         <dl className="detail-dl">
           <div>
             <dt>Campaign</dt>
@@ -1177,111 +1452,120 @@ export function Dashboard({
             <dt>Evidence reference</dt>
             <dd>{p.review_evidence?.reference || 'Not verified'}</dd>
           </div>
-          <div>
-            <dt>Post reference</dt>
-            <dd className="mono">{p.id}</dd>
-          </div>
         </dl>
-        {observations.length > 1 && (
+        {chartObservations.length > 1 && (
           <svg
             className="snapshot-chart"
             viewBox="0 0 420 130"
             role="img"
-            aria-label="View counts over time"
+            aria-label="Observed cumulative public views over time"
           >
             <path
-              d={`M ${observations.map((s, i) => `${(i / (observations.length - 1)) * 400 + 10},${120 - (s.views / max) * 100}`).join(' L ')}`}
+              d={`M ${chartObservations.map((s, i) => `${(i / (chartObservations.length - 1)) * 400 + 10},${120 - (s.views / max) * 100}`).join(' L ')}`}
               fill="none"
-              stroke="#a99cf4"
+              stroke="#91b4e4"
               strokeWidth="3"
             />
             <line x1="10" y1="121" x2="410" y2="121" stroke="#323643" />
           </svg>
         )}
         <div className="button-group">
-          <button
+          <AsyncButton
             className="button"
             onClick={() => open('snapshot', 'Add metric observation', p.id)}
           >
             Add observation
-          </button>
+          </AsyncButton>
           {!locked && (
             <>
-              <button
+              <AsyncButton
                 className="button"
                 onClick={() => open('attribute', 'Assign post to campaign', p.id)}
               >
                 Assign campaign
-              </button>
-              <button
+              </AsyncButton>
+              <AsyncButton
                 className="button primary"
                 onClick={() => open('review', 'Review eligible views', p.id)}
               >
                 Review eligibility
-              </button>
+              </AsyncButton>
             </>
           )}
         </div>
-        <div className="info-box">
-          <p>
-            Collection: <b>{tracking.status}</b>. Provisional in-window public views:{' '}
-            <b>{number(tracking.provisionalViews)}</b>. These are not verified organic or
-            automatically payable.
-            <br />
-            Attention: {tracking.issues.map((i) => i.replaceAll('_', ' ')).join(', ') ||
-              'None'}.{' '}
-            {tracking.followupUntil && (
-              <>Closing follow-up ends {formatTimestamp(tracking.followupUntil)}.</>
-            )}
+        <details className="advanced-details">
+          <summary>Advanced details · metric history</summary>
+          <p className="subtle">
+            Post reference: <span className="mono">{p.id}</span>
           </p>
-        </div>
-        <h3>Metric history · America/New_York</h3>
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Collected</th>
-                <th>Count</th>
-                <th>Metric</th>
-                <th>Source / freshness</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...observations].reverse().map((s) => (
-                <tr key={s.id}>
-                  <td>
-                    {formatTimestamp(s.observed_at)}
-                    <small>{s.evidence}</small>
-                  </td>
-                  <td>{number(s.views)}</td>
-                  <td>{s.metric.replaceAll('_', ' ')}</td>
-                  <td>
-                    {s.source}
-                    <small>
-                      {s.provenance && (
-                        <span>
-                          {s.provenance.metricName} · {s.provenance.scope} · {s.quality}
-                          {s.provenance.periodStart
-                            ? ` · ${formatTimestamp(s.provenance.periodStart)} – ${formatTimestamp(s.provenance.periodEnd!)}`
-                            : ''}
-                        </span>
-                      )}
-                      {s.provider_updated_at
-                        ? `Provider: ${formatTimestamp(s.provider_updated_at)}`
-                        : 'Provider freshness unknown'}
-                    </small>
-                  </td>
+          <div className="info-box">
+            <p>
+              Collection: <b>{tracking.status}</b>. Provisional in-window public views:{' '}
+              <b>{number(tracking.provisionalViews)}</b>. These are not verified organic or
+              automatically payable.
+              <br />
+              Ad detection:{' '}
+              {tracking.isAd === true
+                ? 'suspected paid promotion'
+                : tracking.isAd === false
+                  ? 'not flagged (not organic proof)'
+                  : 'unknown (not organic proof)'}
+              .<br />
+              Attention: {tracking.issues.map((i) => i.replaceAll('_', ' ')).join(', ') ||
+                'None'}.{' '}
+              {tracking.followupUntil && (
+                <>Closing follow-up ends {formatTimestamp(tracking.followupUntil)}.</>
+              )}
+            </p>
+          </div>
+          <h3>Metric history · America/New_York</h3>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Collected</th>
+                  <th>Count</th>
+                  <th>Metric</th>
+                  <th>Source / freshness</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="subtle">
-          Snapshot history is append-only except for required provider source deletion/retention.{' '}
-          {locked
-            ? 'This publication month is locked. Corrections require a linked adjustment.'
-            : ''}
-        </p>
+              </thead>
+              <tbody>
+                {[...observations].reverse().map((s) => (
+                  <tr key={s.id}>
+                    <td>
+                      {formatTimestamp(s.observed_at)}
+                      <small>{s.evidence}</small>
+                    </td>
+                    <td>{number(s.views)}</td>
+                    <td>{s.metric.replaceAll('_', ' ')}</td>
+                    <td>
+                      {s.source}
+                      <small>
+                        {s.provenance && (
+                          <span>
+                            {s.provenance.metricName} · {s.provenance.scope} · {s.quality}
+                            {s.provenance.periodStart
+                              ? ` · ${formatTimestamp(s.provenance.periodStart)} – ${formatTimestamp(s.provenance.periodEnd!)}`
+                              : ''}
+                          </span>
+                        )}
+                        {s.provider_updated_at
+                          ? `Provider: ${formatTimestamp(s.provider_updated_at)}`
+                          : 'Provider freshness unknown'}
+                      </small>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="subtle">
+            Snapshot history is append-only except for required provider source deletion/retention.{' '}
+            {locked
+              ? 'This publication month is locked. Corrections require a linked adjustment.'
+              : ''}
+          </p>
+        </details>
       </div>
     );
   }
@@ -1371,36 +1655,36 @@ export function Dashboard({
         <div className="button-group">
           {s.status === 'draft' ? (
             <>
-              <button
+              <AsyncButton
                 className="button"
                 onClick={() => open('bonus', 'Approve performance bonus', s.id)}
               >
                 Approve / reject bonus
-              </button>
-              <button
+              </AsyncButton>
+              <AsyncButton
                 className="button primary"
-                onClick={() => action({ type: 'finalizeStatement', statementId: s.id })}
+                onClick={() => open('finalize', 'Finalize payout statement', s.id)}
               >
                 Finalize statement
-              </button>
+              </AsyncButton>
             </>
           ) : s.status === 'finalized' ? (
-            <button
+            <AsyncButton
               className="button primary"
               onClick={() => open('paid', 'Record external payment', s.id)}
             >
               Mark as paid
-            </button>
+            </AsyncButton>
           ) : null}
           {s.status !== 'draft' && !s.source_redacted_at && (
-            <button
+            <AsyncButton
               className="button"
               onClick={() => open('adjustment', 'Record linked adjustment', s.id)}
             >
               Add correction
-            </button>
+            </AsyncButton>
           )}
-          <button
+          <AsyncButton
             className="button"
             onClick={() =>
               download(
@@ -1419,7 +1703,7 @@ export function Dashboard({
           >
             <Download size={15} />
             Export lines
-          </button>
+          </AsyncButton>
         </div>
         {data.adjustments
           .filter((a) => a.statement_id === s.id)
@@ -1440,31 +1724,31 @@ export function Dashboard({
               <div className="button-group">
                 {a.status === 'pending' && (
                   <>
-                    <button
+                    <AsyncButton
                       className="button"
                       onClick={() =>
                         action({ type: 'approveAdjustment', adjustmentId: a.id, approve: true })
                       }
                     >
                       Approve correction
-                    </button>
-                    <button
+                    </AsyncButton>
+                    <AsyncButton
                       className="text-button"
                       onClick={() =>
                         action({ type: 'approveAdjustment', adjustmentId: a.id, approve: false })
                       }
                     >
                       Reject
-                    </button>
+                    </AsyncButton>
                   </>
                 )}
                 {a.status === 'approved' && (
-                  <button
+                  <AsyncButton
                     className="button"
                     onClick={() => open('payAdjustment', 'Record correction settlement', a.id)}
                   >
                     Record external settlement
-                  </button>
+                  </AsyncButton>
                 )}
               </div>
             </div>
@@ -1518,7 +1802,204 @@ export function Dashboard({
     const p = data.posts.find((p) => p.id === id);
     const s = data.statements.find((s) => s.id === id);
     const creator = data.creators.find((c) => c.id === id);
+    if (panel.kind.startsWith('recordOptions-')) {
+      const entity = panel.kind.split('-')[1];
+      const archived = data.creators.find((c) => c.id === id)?.archived;
+      return (
+        <div className="detail-body">
+          <AsyncButton
+            className="button"
+            onClick={() =>
+              open(
+                `manage-${archived ? 'restore' : 'archive'}-${entity}`,
+                archived ? 'Restore creator' : 'Archive creator',
+                id
+              )
+            }
+          >
+            <Archive size={16} />
+            {archived ? 'Restore' : 'Archive'}
+          </AsyncButton>
+          <AsyncButton
+            className="button danger"
+            onClick={() => open(`manage-remove-${entity}`, 'Remove unused creator', id)}
+          >
+            <Trash2 size={16} />
+            Remove unused creator
+          </AsyncButton>
+        </div>
+      );
+    }
+    if (panel.kind.startsWith('manage-')) {
+      const [, operation, entity] = panel.kind.split('-');
+      return (
+        <div className="detail-body">
+          <p>
+            {operation === 'remove'
+              ? 'Permanent removal is allowed only without posts or financial history. Related unused configuration may be removed. Connected accounts must be disconnected first. The server will refuse unsafe deletion.'
+              : operation === 'archive'
+                ? 'History and financial records stay intact. Current campaign routing ends now. Associated accounts must be disconnected first for creator/account archival. Future-dated assignments must be resolved first. Restoring does not reopen ended routing or reconnect accounts.'
+                : 'This makes the record available again. Review campaign assignments and reconnect accounts separately.'}
+          </p>
+          <ConfirmationActions
+            onCancel={() => setPanel(null)}
+            destructive={operation === 'remove'}
+            label={
+              operation === 'remove' ? 'Remove' : operation === 'archive' ? 'Archive' : 'Restore'
+            }
+            onConfirm={() => manage(entity, id!, operation)}
+          />
+          {/* Existing server guards remain the authority for safe management. */}
+        </div>
+      );
+    }
+    if (panel.kind === 'accountDetail') {
+      const account = data.accounts.find((a) => a.id === id);
+      if (!account) return null;
+      return (
+        <div className="detail-body">
+          <h2>{accountTitle(account)}</h2>
+          {account.provider === 'zernio' &&
+            ['tiktok', 'instagram'].includes(account.platform) &&
+            account.status === 'connected' &&
+            !account.archived &&
+            !account.integration?.sourceErasedAt &&
+            data.posts.some(
+              (p) =>
+                p.account_id === account.id &&
+                !p.deleted &&
+                !p.source_erased_at &&
+                !usableThumbnail(p.tracking?.thumbnail, mountedAt)
+            ) && (
+              <div className="preview-refresh-control">
+                <AsyncButton className="button" onClick={() => loadPreviews(account.id)}>
+                  <RefreshCw size={15} />
+                  Load missing previews
+                </AsyncButton>
+                <small>
+                  {thumbnailPreviewOnly
+                    ? 'Loads previews for this open page, including workspace refreshes. Your remote Supabase project is not changed; reloading the page clears these local previews.'
+                    : 'Fetches and saves only missing preview metadata. View snapshots, attribution and compensation stay unchanged.'}
+                </small>
+              </div>
+            )}
+          <dl className="detail-facts">
+            <dt>Creator</dt>
+            <dd>{creatorName(account.creator_id)}</dd>
+            <dt>Last synchronization</dt>
+            <dd>
+              {account.last_synced_at
+                ? formatTimestamp(account.last_synced_at)
+                : 'Not yet synchronized'}
+            </dd>
+          </dl>
+          {account.platform === 'youtube' && !account.integration?.channelIdentity && (
+            <p className="subtle">
+              Use Refresh profile details below; no new OAuth connection is required.
+            </p>
+          )}
+          {['youtube', 'tiktok', 'instagram'].includes(account.platform) &&
+            (account.platform === 'youtube' || account.status === 'connected') &&
+            !account.archived &&
+            !account.integration?.sourceErasedAt && (
+              <>
+                <AsyncButton className="button" onClick={() => refreshProfileDetails(account.id)}>
+                  <RefreshCw size={15} />
+                  Refresh profile details
+                </AsyncButton>
+                {(account.integration?.profileMetadataStatus ||
+                  account.integration?.channelIdentityLookup) && (
+                  <p className="subtle">
+                    Last profile attempt:{' '}
+                    {formatTimestamp(
+                      (account.integration.profileMetadataStatus ||
+                        account.integration.channelIdentityLookup)!.checkedAt
+                    )}{' '}
+                    ·{' '}
+                    {(account.integration.profileMetadataStatus ||
+                      account.integration.channelIdentityLookup)!.status.replaceAll('_', ' ')}
+                  </p>
+                )}
+              </>
+            )}
+          {account.provider === 'direct' && !account.archived && (
+            <AsyncButton className="button" onClick={() => connection(account.id, 'deletion-link')}>
+              Create private deletion link
+            </AsyncButton>
+          )}
+          <details className="advanced-details">
+            <summary>Advanced details</summary>
+            <dl className="detail-facts">
+              <dt>Registered identity</dt>
+              <dd className="technical-id">{account.username}</dd>
+              <dt>Platform account ID</dt>
+              <dd className="technical-id">{account.provider_account_id || 'Not connected'}</dd>
+            </dl>
+            <h3>Recent synchronization</h3>
+            {data.syncRuns
+              .filter((r) => r.account_id === id)
+              .slice(0, 3)
+              .map((r) => (
+                <p key={r.id}>
+                  <Badge tone={r.status === 'failed' ? 'red' : 'neutral'}>{r.status}</Badge>{' '}
+                  {r.message}
+                </p>
+              ))}
+          </details>
+          {recordMenu('account', account.id, !!account.archived)}
+        </div>
+      );
+    }
     switch (panel.kind) {
+      case 'excludeHistorical': {
+        const selection = (id ? data.posts.filter((p) => p.id === id) : excludableHistorical)
+          .filter((p) => reviewFor(p).stage === 'historical' && !isLocked(data, p))
+          .slice(0, 100);
+        return (
+          <div className="detail-body">
+            <p>
+              Exclude {selection.length} historical {selection.length === 1 ? 'post' : 'posts'} from
+              this compensation program? Posts, view observations and campaign mappings are
+              retained. Existing rules will recalculate draft totals. Finalized financial records
+              remain protected.
+            </p>
+            <p className="subtle">
+              This is an explicit administrative decision. No organic-view evidence is needed to
+              exclude content. You can review a post later if reliable evidence becomes available
+              and its month remains editable.
+            </p>
+            <ConfirmationActions
+              onCancel={() => setPanel(null)}
+              label="Exclude from compensation"
+              destructive
+              disabled={!selection.length}
+              onConfirm={() =>
+                execute({
+                  type: 'excludeHistoricalPosts',
+                  postIds: selection.map((p) => p.id),
+                  note: 'Historical content discovered after its eligibility window; excluded from this compensation program by administrator.',
+                })
+              }
+            />
+          </div>
+        );
+      }
+      case 'finalize':
+        return (
+          s && (
+            <div className="detail-body">
+              <p>
+                Finalization locks its calculation inputs and approved amount. Later changes require
+                a linked correction. This does not send money.
+              </p>
+              <ConfirmationActions
+                onCancel={() => setPanel(null)}
+                label="Finalize"
+                onConfirm={() => action({ type: 'finalizeStatement', statementId: s.id })}
+              />
+            </div>
+          )
+        );
       case 'app':
         return form(
           [
@@ -1550,25 +2031,12 @@ export function Dashboard({
         );
       case 'editApp': {
         const a = data.apps.find((a) => a.id === id)!;
-        return form(
-          [
-            { ...nameField('App name'), value: a.name },
-            {
-              ...selectField('status', 'Status', [
-                option('active', 'Active'),
-                option('archived', 'Archived'),
-              ]),
-              value: a.archived ? 'archived' : 'active',
-            },
-          ],
-          (v) => ({
-            type: 'updateEntity',
-            entity: 'app',
-            id: a.id,
-            name: v.name,
-            status: v.status as 'active' | 'archived',
-          })
-        );
+        return form([{ ...nameField('App name'), value: a.name }], (v) => ({
+          type: 'updateEntity',
+          entity: 'app',
+          id: a.id,
+          name: v.name,
+        }));
       }
       case 'editCampaign': {
         const c = data.campaigns.find((c) => c.id === id)!;
@@ -1579,7 +2047,9 @@ export function Dashboard({
               ...selectField(
                 'status',
                 'Status',
-                ['active', 'paused', 'archived'].map((v) => option(v, v))
+                (c.status === 'archived' ? ['archived'] : ['active', 'paused']).map((v) =>
+                  option(v, v)
+                )
               ),
               value: c.status,
             },
@@ -1609,13 +2079,13 @@ export function Dashboard({
                       </small>
                     </div>
                   ))}
-                <button
+                <AsyncButton
                   className="text-button"
                   onClick={() => open('assignment', 'Assign creator to campaign', id)}
                 >
                   <Plus size={15} />
                   Add assignment
-                </button>
+                </AsyncButton>
               </div>
               {form(
                 [
@@ -1683,7 +2153,7 @@ export function Dashboard({
               option('company', 'Company-owned'),
             ]),
             selectField('provider', 'Tracking provider', [
-              option('zernio', 'Zernio (TikTok pilot)'),
+              option('zernio', 'Zernio (TikTok / Instagram pilot)'),
               option('manual', 'Manual / CSV'),
               option('direct', 'Official API · YouTube / Instagram / Facebook'),
             ]),
@@ -1912,8 +2382,19 @@ export function Dashboard({
       case 'statement':
         return form(
           [
-            { ...selectField('appId', 'App', appOptions), value: selectedApp },
-            selectField('creatorId', 'Creator', creatorOptions),
+            {
+              ...selectField(
+                'appId',
+                'App',
+                data.apps.map((a) => option(a.id, `${a.name}${a.archived ? ' (archived)' : ''}`))
+              ),
+              value: selectedApp,
+            },
+            selectField(
+              'creatorId',
+              'Creator',
+              data.creators.map((c) => option(c.id, `${c.name}${c.archived ? ' (archived)' : ''}`))
+            ),
             {
               name: 'month',
               label: 'Publication month',
@@ -2061,37 +2542,44 @@ export function Dashboard({
           }),
           'Record settlement'
         );
+      case 'deletionLink':
       case 'authorization':
         return (
           <div className="detail-body">
             <div className="info-box">
               <Link2 size={18} />
               <p>
-                Send this one-use authorization link to the creator. They connect their registered
-                social account through Zernio without receiving administrator access. The dashboard
-                ticket expires after 30 minutes.
+                {panel.kind === 'deletionLink'
+                  ? 'This private link lets the creator request connection and API source-data deletion. It expires after 90 days. Sharing it permits a destructive operation; send it only to the account owner.'
+                  : `Send this expiring authorization link to the creator. They connect their registered account through ${data.accounts.find((a) => a.id === id)?.provider === 'zernio' ? 'Zernio' : 'the official platform'} without receiving dashboard access. The invitation expires after 30 minutes.`}
               </p>
             </div>
             <label className="field">
-              Creator authorization link
-              <input readOnly value={connectionUrl} onFocus={(e) => e.target.select()} />
+              {panel.kind === 'deletionLink'
+                ? 'Private deletion link'
+                : 'Creator authorization link'}
+              <Input readOnly value={connectionUrl} onFocus={(e) => e.target.select()} />
             </label>
             <div className="button-group">
-              <button
+              <AsyncButton
                 className="button primary"
                 onClick={async () => {
                   try {
                     await navigator.clipboard.writeText(connectionUrl);
-                    setToast('Creator connection link copied');
+                    setToast(
+                      panel.kind === 'deletionLink'
+                        ? 'Private deletion link copied'
+                        : 'Creator connection link copied'
+                    );
                   } catch {
                     setToast('Select and copy the link above.');
                   }
                 }}
               >
                 Copy link
-              </button>
+              </AsyncButton>
               <a className="button" target="_blank" rel="noreferrer" href={connectionUrl}>
-                Open authorization
+                {panel.kind === 'deletionLink' ? 'Open deletion request' : 'Open authorization'}
                 <ExternalLink size={14} />
               </a>
             </div>
@@ -2101,19 +2589,53 @@ export function Dashboard({
             </p>
           </div>
         );
-      case 'disconnect':
+      case 'disconnect': {
+        const account = data.accounts.find((a) => a.id === id)!;
         return (
           <div className="detail-body">
             <p>
-              Disconnecting stops future syncs. Local posts, snapshots, and statements are retained.
-              Zernio documents a one-hour grace period before permanent deletion of its account
-              data. Reconnect before that expires to restore its link.
+              {account.provider === 'direct'
+                ? 'Stops synchronization, erases API-derived source data and queues provider revocation. Finalized monetary records are retained with source data redacted. This source-data deletion cannot be undone by reconnecting.'
+                : 'Stops synchronization and disconnects the Zernio account. Local history remains. Zernio has a one-hour restoration grace period; verify its workspace usage before assuming the free slot is available.'}
             </p>
-            <button className="button danger" onClick={() => connection(id!, 'disconnect')}>
-              Disconnect account
-            </button>
+            {disconnectImpact.length > 0 && (
+              <div className="form-error">
+                <b>The following accounts share this grant and will also be disconnected:</b>
+                <ul>
+                  {disconnectImpact.map((a) => (
+                    <li key={a.id}>
+                      {a.platform} · @{a.username}
+                    </li>
+                  ))}
+                </ul>
+                <label>
+                  <Input
+                    type="checkbox"
+                    checked={sharedConfirmed}
+                    onChange={(e) => setSharedConfirmed(e.target.checked)}
+                  />{' '}
+                  I confirm disconnection and source deletion for these accounts too.
+                </label>
+              </div>
+            )}
+            {account.platform === 'youtube' && (
+              <p className="subtle">
+                Google revocation can invalidate other tokens under the same Google application
+                grant.
+              </p>
+            )}
+            <ConfirmationActions
+              onCancel={() => setPanel(null)}
+              destructive
+              disabled={disconnectImpact.length > 0 && !sharedConfirmed}
+              label={
+                account.provider === 'direct' ? 'Disconnect and delete source data' : 'Disconnect'
+              }
+              onConfirm={() => connection(id!, 'disconnect')}
+            />
           </div>
         );
+      }
       case 'import':
         return <ImportPanel data={data} onImport={async (c) => execute(c)} />;
       default:
@@ -2127,12 +2649,12 @@ export function Dashboard({
           <span className="brand-icon">
             <Layers size={21} />
           </span>
-          Creator<span>Ledger</span>
+          H2A <span>Creator Hub</span>
         </Link>
         <div className="workspace-label">PRIVATE WORKSPACE</div>
         <label className="app-switcher">
           <Layers size={17} />
-          <select
+          <Select
             aria-label="Switch app"
             value={appId}
             onChange={(e) => {
@@ -2148,13 +2670,12 @@ export function Dashboard({
                   {a.name}
                 </option>
               ))}
-          </select>
-          <ChevronDown size={14} />
+          </Select>
         </label>
         <div className="nav-label">MANAGE</div>
         <nav>
           {nav.map(([label, Icon]) => (
-            <button
+            <AsyncButton
               key={label}
               className={view === label ? 'active' : ''}
               onClick={() => {
@@ -2166,7 +2687,7 @@ export function Dashboard({
               <Icon size={18} />
               <span>{label}</span>
               {label === 'Needs attention' && held.length > 0 && <em>{held.length}</em>}
-            </button>
+            </AsyncButton>
           ))}
         </nav>
         <div className="sidebar-bottom">
@@ -2182,48 +2703,63 @@ export function Dashboard({
               <small>Creator operations</small>
             </div>
             {!preview && (
-              <button
+              <AsyncButton
                 className="icon-button"
                 aria-label="Sign out"
                 onClick={async () => {
-                  await fetch('/api/auth', { method: 'DELETE' });
+                  await requestJson('/api/auth', { method: 'DELETE' });
                   router.push('/');
                   router.refresh();
                 }}
               >
                 <LogOut size={16} />
-              </button>
+              </AsyncButton>
             )}
           </div>
         </div>
       </aside>
       <div className="main-shell">
         <header className="topbar">
-          <button
+          <AsyncButton
             className="icon-button mobile-menu"
             aria-label="Open navigation"
             onClick={() => setMenu(!menu)}
           >
             <Menu size={21} />
-          </button>
+          </AsyncButton>
           <div className="breadcrumb">
             Workspace <span>/</span>
             <strong>{view}</strong>
           </div>
           <div className="topbar-actions">
+            <label className="archive-toggle">
+              <Input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(e) => setShowArchived(e.target.checked)}
+              />
+              Show archived
+            </label>
             <label className="search-box">
               <Search size={16} />
-              <input
-                aria-label="Search creators or posts"
-                placeholder="Search creators or posts…"
+              <Input
+                aria-label="Search workspace"
+                placeholder="Search names, accounts, or posts…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
               />
               <kbd>⌕</kbd>
             </label>
-            <button className="icon-button" aria-label="Refresh data" onClick={refresh}>
-              <RefreshCw size={17} />
-            </button>
+            <Tooltip label="Refresh workspace">
+              <AsyncButton
+                className="icon-button"
+                aria-label="Refresh data"
+                busy={refreshing}
+                onClick={() => refresh()}
+              >
+                <RefreshCw size={17} />
+              </AsyncButton>
+            </Tooltip>
             <Avatar name="Admin" />
           </div>
         </header>
@@ -2238,26 +2774,28 @@ export function Dashboard({
             </Link>
           </div>
         )}
-        <main className="main-content">
+        <main className="main-content" key={view}>
           {error && (
             <div className="error-banner" role="alert">
               {error}
-              <button onClick={() => setError('')} aria-label="Dismiss error">
+              <AsyncButton onClick={() => setError('')} aria-label="Dismiss error">
                 ×
-              </button>
+              </AsyncButton>
             </div>
           )}
           {toast && (
             <div className="toast-message" role="status">
               <Check size={16} />
               {toast}
-              <button onClick={() => setToast('')} aria-label="Dismiss notification">
+              <AsyncButton onClick={() => setToast('')} aria-label="Dismiss notification">
                 ×
-              </button>
+              </AsyncButton>
             </div>
           )}
           {view === 'Overview' ? (
             overview()
+          ) : view === 'Analytics' ? (
+            <Analytics key={appId} data={data} appId={appId} />
           ) : view === 'Apps & campaigns' ? (
             appsView()
           ) : view === 'Creators' ? (
@@ -2278,13 +2816,13 @@ export function Dashboard({
                   <p>Every published post, with a history you can trust.</p>
                 </div>
                 <div className="button-group">
-                  <button
+                  <AsyncButton
                     className="button"
                     onClick={() => open('import', 'Import posts or observations')}
                   >
                     <Download size={15} />
                     Import CSV
-                  </button>
+                  </AsyncButton>
                   {addButton('addPost', 'Add a post', 'Add post')}
                 </div>
               </div>
@@ -2299,32 +2837,86 @@ export function Dashboard({
               <section className="card">
                 <div className="section-heading">
                   <h2>Tracked posts</h2>
-                  <select
-                    className="filter-select"
-                    aria-label="Filter campaign"
-                    value={campaignFilter}
-                    onChange={(e) => setCampaignFilter(e.target.value)}
-                  >
-                    <option value="all">All campaigns</option>
-                    {campaignOptions.map((c) => (
-                      <option key={c.value} value={c.value}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="posts-toolbar">
+                    <div className="view-toggle" role="group" aria-label="Post display">
+                      <AsyncButton
+                        type="button"
+                        aria-pressed={postView === 'grid'}
+                        onClick={() => setPostView('grid')}
+                      >
+                        <Grid2X2 size={16} />
+                        Grid
+                      </AsyncButton>
+                      <AsyncButton
+                        type="button"
+                        aria-pressed={postView === 'table'}
+                        onClick={() => setPostView('table')}
+                      >
+                        <Table2 size={16} />
+                        Table
+                      </AsyncButton>
+                    </div>
+                    <Select
+                      className="filter-select"
+                      aria-label="Filter campaign"
+                      value={campaignFilter}
+                      onChange={(e) => setCampaignFilter(e.target.value)}
+                    >
+                      <option value="all">All campaigns</option>
+                      {campaignOptions.map((c) => (
+                        <option key={c.value} value={c.value}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
                 </div>
-                {postTable(posts)}
+                {postView === 'grid' ? (
+                  <PostGrid
+                    data={data}
+                    posts={posts}
+                    now={mountedAt}
+                    onOpen={(post) => open('post', 'Post details', post.id)}
+                  />
+                ) : (
+                  postTable(posts)
+                )}
               </section>
             </>
           )}
         </main>
         <footer className="dashboard-footer">
-          <span>Creator Ledger</span>
+          <span>H2A Creator Hub</span>
           <span>Private workspace · Accounting and display timezone: America/New_York · USD</span>
         </footer>
       </div>
       {panel && (
-        <Drawer title={panel.title} onClose={() => setPanel(null)}>
+        <Drawer
+          compact={
+            panel.kind.startsWith('manage-') ||
+            ['finalize', 'disconnect', 'recordOptions-creator', 'excludeHistorical'].includes(
+              panel.kind
+            )
+          }
+          title={
+            panel.kind.startsWith('manage-')
+              ? `${panel.kind.split('-')[1][0].toUpperCase()}${panel.kind.split('-')[1].slice(1)} ${panel.kind.split('-')[2] === 'account' ? 'social account' : panel.kind.split('-')[2]}?`
+              : panel.kind === 'disconnect'
+                ? `Disconnect ${accountTitle(data.accounts.find((a) => a.id === panel.id)!)}?`
+                : panel.kind === 'finalize'
+                  ? 'Finalize statement?'
+                  : panel.title
+          }
+          description={
+            panel.kind.startsWith('manage-') ||
+            ['disconnect', 'finalize', 'excludeHistorical'].includes(panel.kind)
+              ? 'Review the consequences before confirming.'
+              : undefined
+          }
+          onClose={() => {
+            if (!mutation.current) setPanel(null);
+          }}
+        >
           {error && (
             <p className="form-error padded" role="alert">
               {error}
@@ -2347,6 +2939,7 @@ function ImportPanel({
   const [rows, setRows] = useState<Record<string, string>[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [reading, setReading] = useState(false);
   const headers =
     kind === 'posts'
       ? ['account_id', 'platform_post_id', 'url', 'published_at', 'caption', 'campaign_id']
@@ -2362,8 +2955,9 @@ function ImportPanel({
       </div>
       <label className="field">
         Import type
-        <select
+        <Select
           value={kind}
+          disabled={reading || busy}
           onChange={(e) => {
             setKind(e.target.value);
             setRows([]);
@@ -2372,9 +2966,9 @@ function ImportPanel({
         >
           <option value="posts">Posts</option>
           <option value="snapshots">Metric observations</option>
-        </select>
+        </Select>
       </label>
-      <button
+      <AsyncButton
         className="text-button"
         onClick={() =>
           download(`ugc-${kind}-template.csv`, [Object.fromEntries(headers.map((h) => [h, '']))])
@@ -2382,7 +2976,7 @@ function ImportPanel({
       >
         <Download size={15} />
         Download template
-      </button>
+      </AsyncButton>
       <p className="subtle">{kind === 'posts' ? 'Account references:' : 'Post references:'}</p>
       <div className="reference-list">
         {(kind === 'posts'
@@ -2397,39 +2991,57 @@ function ImportPanel({
       </div>
       <label className="field">
         CSV file
-        <input
+        <Input
           type="file"
           accept=".csv,text/csv"
-          onChange={(e) => {
+          disabled={reading || busy}
+          onChange={async (e) => {
             setError('');
-            const f = e.target.files?.[0];
-            if (!f) return;
-            if (f.size > 2000000) {
+            setRows([]);
+            const file = e.target.files?.[0];
+            if (!file) return;
+            if (file.size > 2000000) {
               setError('Maximum file size is 2 MB.');
               return;
             }
-            Papa.parse<Record<string, string>>(f, {
-              header: true,
-              skipEmptyLines: 'greedy',
-              complete: (r) => {
-                if (r.errors.length) {
-                  setError(r.errors[0].message);
-                  return;
-                }
-                if (
-                  headers
-                    .filter((h) => !['caption', 'campaign_id', 'evidence'].includes(h))
-                    .some((h) => !r.meta.fields?.includes(h))
-                ) {
-                  setError('Required CSV columns are missing. Use the template.');
-                  return;
-                }
-                setRows(r.data);
-              },
-            });
+            setReading(true);
+            let timeout: ReturnType<typeof setTimeout> | undefined;
+            try {
+              const text = await Promise.race([
+                file.text(),
+                new Promise<never>((_, reject) => {
+                  timeout = setTimeout(
+                    () => reject(new Error('Reading the CSV timed out. Select the file again.')),
+                    20000
+                  );
+                }),
+              ]);
+              const result = Papa.parse<Record<string, string>>(text, {
+                header: true,
+                skipEmptyLines: 'greedy',
+              });
+              if (result.errors.length) throw new Error(result.errors[0].message);
+              if (
+                headers
+                  .filter((h) => !['caption', 'campaign_id', 'evidence'].includes(h))
+                  .some((h) => !result.meta.fields?.includes(h))
+              )
+                throw new Error('Required CSV columns are missing. Use the template.');
+              setRows(result.data);
+            } catch (error) {
+              setError(error instanceof Error ? error.message : 'Could not read the CSV.');
+            } finally {
+              clearTimeout(timeout);
+              setReading(false);
+            }
           }}
         />
       </label>
+      {reading && (
+        <p role="status" className="sync-status">
+          Reading and validating CSV…
+        </p>
+      )}
       {rows.length > 0 && (
         <>
           <p>{rows.length} row(s) ready for validation</p>
@@ -2453,7 +3065,7 @@ function ImportPanel({
               </tbody>
             </table>
           </div>
-          <button
+          <AsyncButton
             className="button primary"
             disabled={busy}
             onClick={async () => {
@@ -2493,8 +3105,8 @@ function ImportPanel({
               }
             }}
           >
-            {busy ? 'Importing…' : 'Validate and import'}
-          </button>
+            Validate and import
+          </AsyncButton>
         </>
       )}
       {error && (

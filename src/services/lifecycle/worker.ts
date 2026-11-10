@@ -1,4 +1,5 @@
 import 'server-only';
+import { channelSnippet, channelIdentity } from '@/services/youtube/identity';
 import { z } from 'zod';
 import { adminDatabase } from '@/lib/server/supabase';
 import { DirectAccess } from '@/services/tracking/direct/base';
@@ -32,18 +33,25 @@ export async function checkSources(db: DB, deadline: number) {
   const access = new DirectAccess(job.account, deadline),
     observations: { id: string; status: 'available' | 'unavailable'; caption?: string }[] = [];
   let authorized = false;
+  let youtubeIdentity: ReturnType<typeof channelIdentity>;
   try {
     const remote = encodeURIComponent(job.account.provider_account_id || '');
     if (job.account.platform === 'youtube') {
       const identity = z
-        .object({ items: z.array(z.object({ id: z.string() })) })
+        .object({
+          items: z.array(z.object({ id: z.string(), snippet: channelSnippet.optional() })),
+        })
         .parse(
-          await access.request('https://www.googleapis.com/youtube/v3/channels?part=id&mine=true')
+          await access.request(
+            'https://www.googleapis.com/youtube/v3/channels?part=id,snippet&mine=true'
+          )
         );
       if (!identity.items.some((i) => i.id === job.account.provider_account_id)) {
         await access.token.revoke();
         return true;
       }
+      const channel = identity.items.find((i) => i.id === job.account.provider_account_id);
+      if (channel?.snippet) youtubeIdentity = channelIdentity(channel.snippet);
       authorized = true;
       if (job.posts.length) {
         const query = new URLSearchParams({
@@ -138,6 +146,15 @@ export async function checkSources(db: DB, deadline: number) {
   // Revocation atomically cancels the source lease; a lost lease must never restore source data.
   if (result.error && !result.error.message?.includes('LEASE_LOST'))
     throw new Error('Could not save source checks.');
+  if (!result.error && youtubeIdentity) {
+    const saved = await db.rpc('store_channel_identity', {
+      target_account: job.account.id,
+      expected_channel: job.account.provider_account_id,
+      identity: youtubeIdentity,
+    });
+    if (saved.error)
+      throw new Error('Channel identity could not be saved. Check the UI management migration.');
+  }
   return true;
 }
 export async function processRevocation(db: DB, deadline: number) {

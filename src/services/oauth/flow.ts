@@ -1,4 +1,7 @@
 import 'server-only';
+import { mergeProfile } from '@/services/profiles/identity';
+import { instagramProfile } from '@/services/profiles/metadata';
+import { channelSnippet, channelIdentity } from '@/services/youtube/identity';
 import { createHash, createHmac } from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
@@ -34,9 +37,7 @@ const cookieName = 'ugc_creator_oauth';
 const validNonce = (v: string | null | undefined): v is string => !!v && /^[a-f0-9]{64}$/.test(v);
 const normal = (s: string) => s.trim().replace(/^@/, '').toLowerCase();
 const googleChannels = z.object({
-  items: z.array(
-    z.object({ id: z.string(), snippet: z.object({ customUrl: z.string().optional() }) })
-  ),
+  items: z.array(z.object({ id: z.string(), snippet: channelSnippet })),
 });
 const pagesSchema = z.object({
   data: z.array(
@@ -96,6 +97,7 @@ export async function directConnectionAction(
     if (result.error) throw new Error('Could not disconnect safely. Refresh and retry.');
     return NextResponse.json({ ok: true });
   }
+  if (account.archived) throw new Error('Restore the archived account before connecting.');
   if (account.integration?.sourceErasedAt)
     throw new Error('Create a new registered account and fresh consent after erasure.');
   if (action !== 'connect') throw new Error('Unsupported connection action.');
@@ -210,7 +212,7 @@ async function invitationMode(
   const account = data.accounts.find(
     (a) => a.id === accountId && a.platform === platform && a.provider === 'direct'
   );
-  if (!account || account.integration?.sourceErasedAt)
+  if (!account || account.archived || account.integration?.sourceErasedAt)
     throw new Error('Registered account is unavailable.');
   return instagramAuthMode(account);
 }
@@ -403,6 +405,7 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
       );
   }
   let resourceId: string, bundle: TokenBundle;
+  let youtubeIdentity: ReturnType<typeof channelIdentity>;
   if (platform === 'youtube') {
     trace.stage = 'verifier_decryption';
     const verifier = unseal<string>(flow.data.verifier, hash);
@@ -461,6 +464,7 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
         'A different YouTube channel was authorized.'
       );
     resourceId = match.id;
+    youtubeIdentity = channelIdentity(match.snippet);
   } else if (platform === 'instagram' && mode === 'unified_login') {
     ({ resourceId, bundle } = await resolveUnifiedInstagram(
       code,
@@ -485,6 +489,7 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
     account.username !== registered.username ||
     account.provider !== 'direct' ||
     account.platform !== platform ||
+    account.archived ||
     account.integration?.sourceErasedAt ||
     (platform === 'instagram' && instagramAuthMode(account) !== mode)
   )
@@ -498,6 +503,10 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
   account.error = null;
   account.last_synced_at = null;
   account.integration = {
+    ...(account.integration?.profileMetadata
+      ? { profileMetadata: account.integration.profileMetadata }
+      : {}),
+    ...(youtubeIdentity ? { channelIdentity: youtubeIdentity } : {}),
     ...(platform === 'instagram' ? { instagramAuthMode: mode } : {}),
     payoutsBlocked: platform === 'youtube' && !youtubePolicyApproved(),
     policyReason:
@@ -506,6 +515,31 @@ async function completeOAuth(request: Request, value: string, trace: CallbackTra
         : undefined,
     tokenExpiresAt: bundle.expiresAt,
   };
+  if (platform === 'instagram') {
+    try {
+      const profile = await instagramProfile(account, async (url) => {
+        const target = new URL(url);
+        if (target.hostname === 'graph.facebook.com')
+          target.searchParams.set(
+            'appsecret_proof',
+            createHmac('sha256', oauthConfig(platform, mode).clientSecret)
+              .update(bundle.accessToken)
+              .digest('hex')
+          );
+        return providerJson(
+          target.toString(),
+          { headers: { Authorization: `Bearer ${bundle.accessToken}` } },
+          Math.min(deadline, Date.now() + 4000)
+        );
+      });
+      account.integration = {
+        ...account.integration,
+        profileMetadata: mergeProfile(account.integration?.profileMetadata, profile),
+      };
+    } catch {
+      /* Profile refresh retries through the worker without changing OAuth success. */
+    }
+  }
   data.audit.unshift({
     id: crypto.randomUUID(),
     action: 'connect',

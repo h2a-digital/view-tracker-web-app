@@ -9,6 +9,7 @@ import {
   refreshDrafts,
   resolveRules,
 } from './compensation';
+import { postReview } from './post-review';
 import { validateEvidence } from './tracking';
 import { accountingTimezone } from './time';
 import { commandSchema, type Command } from './validation';
@@ -313,7 +314,7 @@ export function runCommand(
       break;
     }
     case 'assignCreator': {
-      requireValue(data.creators.find((c) => c.id === command.creatorId));
+      requireValue(data.creators.find((c) => c.id === command.creatorId && !c.archived));
       requireValue(data.campaigns.find((c) => c.id === command.campaignId));
       interval(command.startsAt, command.endsAt);
       if (
@@ -346,13 +347,13 @@ export function runCommand(
         !/^\d+$/.test(command.username)
       )
         throw new Error('Enter the numeric Facebook Page ID for direct tracking.');
-      if (command.provider === 'zernio' && command.platform !== 'tiktok')
+      if (command.provider === 'zernio' && !['tiktok', 'instagram'].includes(command.platform))
         throw new Error(
-          'This pilot supports Zernio for TikTok only. Select manual / CSV for this platform.'
+          'Zernio supports TikTok and Instagram only. Select manual / CSV for this platform.'
         );
       if (/[\/\\?#:\s]/.test(command.username))
         throw new Error('Enter the public handle only, without a profile URL or spaces.');
-      requireValue(data.creators.find((c) => c.id === command.creatorId));
+      requireValue(data.creators.find((c) => c.id === command.creatorId && !c.archived));
       const username = command.username.replace(/^@/, '');
       if (
         data.accounts.some(
@@ -382,7 +383,7 @@ export function runCommand(
       break;
     }
     case 'mapAccount': {
-      const a = requireValue(data.accounts.find((a) => a.id === command.accountId));
+      const a = requireValue(data.accounts.find((a) => a.id === command.accountId && !a.archived));
       const m = requireValue(data.memberships.find((m) => m.id === command.membershipId));
       if (m.creator_id !== a.creator_id)
         throw new Error('The account and campaign membership must belong to the same creator.');
@@ -489,6 +490,27 @@ export function runCommand(
       ensureEditable(data, p);
       setAttribution(data, p, command.campaignId);
       entityId = p.id;
+      break;
+    }
+    case 'excludeHistoricalPosts': {
+      // Validate the entire selection before changing anything. Finalized/paid months stay immutable.
+      const targets = command.postIds.map((id) =>
+        requireValue(data.posts.find((p) => p.id === id))
+      );
+      for (const post of targets) {
+        ensureEditable(data, post);
+        if (postReview(data, post, now).stage !== 'historical')
+          throw new Error('Only unresolved historical posts may be excluded with this action.');
+      }
+      for (const post of targets) {
+        post.eligible_views = 0;
+        post.eligibility_status = 'excluded';
+        post.review_note = command.note;
+        post.review_evidence = null;
+        post.accepted_by = actor;
+        post.accepted_at = now;
+      }
+      entityId = targets[0].id;
       break;
     }
     case 'reviewPost': {
@@ -849,7 +871,7 @@ export function runCommand(
     action: command.type,
     entity_id: entityId,
     detail:
-      command.type === 'reviewPost'
+      command.type === 'reviewPost' || command.type === 'excludeHistoricalPosts'
         ? command.note
         : command.type === 'approveBonus'
           ? command.note

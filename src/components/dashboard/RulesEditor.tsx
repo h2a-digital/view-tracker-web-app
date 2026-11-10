@@ -1,4 +1,6 @@
 'use client';
+import { Input, Select, Switch } from '@/components/ui/controls';
+import { AsyncButton } from './AsyncButton';
 import { instant, instantSchema } from '@/domain/time';
 import { useState } from 'react';
 import { Plus, Trash2, GitBranch } from 'lucide-react';
@@ -69,7 +71,7 @@ export function RulesEditor({
   }
   const control = (key: keyof Rules, label: string) => (
     <label className="override-switch">
-      <input type="checkbox" checked={override(key)} onChange={() => toggle(key)} />
+      <Switch checked={override(key)} onCheckedChange={() => toggle(key)} label={label} />
       <span>{label}</span>
       <small>{override(key) ? 'Override' : 'Inherited'}</small>
     </label>
@@ -79,6 +81,7 @@ export function RulesEditor({
       className="panel-form rules-form"
       onSubmit={async (e) => {
         e.preventDefault();
+        if (busy) return;
         setError('');
         setBusy(true);
         try {
@@ -107,7 +110,7 @@ export function RulesEditor({
       </div>
       <label className="field">
         <span>App</span>
-        <select
+        <Select
           value={appId}
           onChange={(e) => {
             setAppId(e.target.value);
@@ -121,11 +124,11 @@ export function RulesEditor({
               {a.name}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
       <label className="field">
         <span>Rule level</span>
-        <select
+        <Select
           value={scope}
           onChange={(e) => {
             const s = e.target.value as RuleVersion['scope'];
@@ -137,12 +140,12 @@ export function RulesEditor({
           <option value="campaign">Campaign override</option>
           <option value="creator_app">Creator · this app</option>
           <option value="creator_campaign">Creator · this campaign</option>
-        </select>
+        </Select>
       </label>
       {scope.includes('campaign') && (
         <label className="field">
           <span>Campaign</span>
-          <select
+          <Select
             value={campaignId}
             required
             onChange={(e) => {
@@ -156,13 +159,13 @@ export function RulesEditor({
                 {c.name}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
       )}
       {scope.startsWith('creator') && (
         <label className="field">
           <span>Creator</span>
-          <select
+          <Select
             value={creatorId}
             required
             onChange={(e) => {
@@ -176,12 +179,12 @@ export function RulesEditor({
                 {c.name}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
       )}
       <label className="field">
         <span>Effective from</span>
-        <input
+        <Input
           type="text"
           value={effective}
           required
@@ -194,7 +197,7 @@ export function RulesEditor({
       </label>
       <section className="rule-section">
         {control('windowDays', 'Tracking window')}
-        <select
+        <Select
           disabled={!override('windowDays')}
           value={[7, 14, 30].includes(values.windowDays) ? values.windowDays : 'custom'}
           onChange={(e) =>
@@ -205,9 +208,9 @@ export function RulesEditor({
           <option value="14">14 days</option>
           <option value="30">30 days</option>
           <option value="custom">Custom</option>
-        </select>
+        </Select>
         {![7, 14, 30].includes(values.windowDays) && (
-          <input
+          <Input
             aria-label="Custom window days"
             type="number"
             min="0.01"
@@ -227,7 +230,7 @@ export function RulesEditor({
           return (
             <div className="fixed-rule" key={platform}>
               <label>
-                <input
+                <Input
                   type="checkbox"
                   disabled={!override('fixedPayments')}
                   checked={!!payment}
@@ -246,7 +249,7 @@ export function RulesEditor({
                 <div className="two-col">
                   <label className="field">
                     <span>USD / post</span>
-                    <input
+                    <Input
                       disabled={!override('fixedPayments')}
                       type="number"
                       min="0"
@@ -264,7 +267,7 @@ export function RulesEditor({
                   </label>
                   <label className="field">
                     <span>Minimum views</span>
-                    <input
+                    <Input
                       disabled={!override('fixedPayments')}
                       type="number"
                       min="0"
@@ -290,7 +293,7 @@ export function RulesEditor({
       </section>
       <section className="rule-section">
         {control('cpmMode', 'CPM bonus model')}
-        <select
+        <Select
           disabled={!override('cpmMode')}
           value={values.cpmMode}
           onChange={(e) => set('cpmMode', e.target.value as Rules['cpmMode'])}
@@ -298,11 +301,11 @@ export function RulesEditor({
           <option value="progressive">Progressive tiers</option>
           <option value="flat">Flat CPM</option>
           <option value="disabled">No performance bonus</option>
-        </select>
+        </Select>
         {values.cpmMode === 'flat' && (
           <>
             {control('flatCpm', 'Flat rate per 1,000 views')}
-            <input
+            <Input
               aria-label="Flat CPM"
               type="number"
               min="0"
@@ -322,7 +325,7 @@ export function RulesEditor({
             </div>
             {values.tiers.map((t, i) => (
               <div className="tier-row" key={i}>
-                <input
+                <Input
                   aria-label={`Tier ${i + 1} upper threshold`}
                   disabled={!override('tiers') || t.upTo === null}
                   type={t.upTo === null ? 'text' : 'number'}
@@ -337,7 +340,7 @@ export function RulesEditor({
                     )
                   }
                 />
-                <input
+                <Input
                   aria-label={`Tier ${i + 1} rate`}
                   disabled={!override('tiers')}
                   type="number"
@@ -352,7 +355,7 @@ export function RulesEditor({
                   }
                 />
                 {t.upTo !== null && (
-                  <button
+                  <AsyncButton
                     type="button"
                     className="icon-button"
                     aria-label="Remove tier"
@@ -365,11 +368,11 @@ export function RulesEditor({
                     }
                   >
                     <Trash2 size={15} />
-                  </button>
+                  </AsyncButton>
                 )}
               </div>
             ))}
-            <button
+            <AsyncButton
               type="button"
               className="button subtle"
               disabled={!override('tiers')}
@@ -383,7 +386,7 @@ export function RulesEditor({
               }}
             >
               <Plus size={14} /> Add tier
-            </button>
+            </AsyncButton>
           </>
         )}
       </section>
@@ -392,7 +395,7 @@ export function RulesEditor({
         <div className="check-list">
           {platforms.map((p) => (
             <label key={p}>
-              <input
+              <Input
                 type="checkbox"
                 disabled={!override('bonusPlatforms')}
                 checked={values.bonusPlatforms.includes(p)}
@@ -413,7 +416,7 @@ export function RulesEditor({
       {!scope.includes('campaign') && (
         <section className="rule-section">
           {control('monthlyCap', 'Monthly cap per app / creator')}
-          <input
+          <Input
             aria-label="Monthly cap in USD"
             type="number"
             min="0"
@@ -427,23 +430,23 @@ export function RulesEditor({
       )}
       <section className="rule-section">
         {control('bonusApproval', 'Bonus approval policy')}
-        <select
+        <Select
           disabled={!override('bonusApproval')}
           value={String(values.bonusApproval)}
           onChange={(e) => set('bonusApproval', e.target.value === 'true')}
         >
           <option value="true">Manual approval required</option>
           <option value="false">Automatic bonus</option>
-        </select>
+        </Select>
       </section>
       {error && (
         <p role="alert" className="form-error">
           {error}
         </p>
       )}
-      <button className="button primary" disabled={busy}>
-        {busy ? 'Saving…' : 'Save new rule version'}
-      </button>
+      <AsyncButton className="button primary" disabled={busy} busy={busy}>
+        Save new rule version
+      </AsyncButton>
     </form>
   );
 }

@@ -88,7 +88,15 @@ function grant(
     .fn()
     .mockResolvedValueOnce(json(wrapped ? { data: [token] } : token))
     .mockResolvedValueOnce(json({ access_token: 'long-private', expires_in: 5184000 }))
-    .mockResolvedValueOnce(json({ id: '333', user_id: '222', username }));
+    .mockResolvedValueOnce(json({ id: '333', user_id: '222', username }))
+    .mockResolvedValueOnce(
+      json({
+        user_id: '222',
+        username,
+        name: 'Creator',
+        profile_picture_url: 'https://scontent.cdninstagram.com/avatar',
+      })
+    );
   vi.stubGlobal('fetch', fetch);
   return fetch;
 }
@@ -146,6 +154,7 @@ describe('Instagram Login and legacy compatibility', () => {
         'api.instagram.com',
         'graph.instagram.com',
         'graph.instagram.com',
+        'graph.instagram.com',
       ]);
       expect(fetch.mock.calls[0][1].method).toBe('POST');
       expect(String(fetch.mock.calls[0][1].body)).toContain(
@@ -154,7 +163,12 @@ describe('Instagram Login and legacy compatibility', () => {
       const saved = mocks.rpc.mock.calls.find(([n]) => n === 'commit_direct_connection')![1];
       expect(saved.document.accounts[0]).toMatchObject({
         provider_account_id: '222',
-        integration: { instagramAuthMode: 'instagram_login' },
+        integration: {
+          instagramAuthMode: 'instagram_login',
+          profileMetadata: expect.objectContaining({
+            avatarUrl: 'https://scontent.cdninstagram.com/avatar',
+          }),
+        },
       });
       expect(unseal(saved.encrypted_token, document.accounts[0].id)).toMatchObject({
         actorId: '111',

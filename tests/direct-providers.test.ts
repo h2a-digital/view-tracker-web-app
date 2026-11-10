@@ -39,6 +39,7 @@ const video = {
   snippet: {
     channelId: 'remote',
     title: 'Native Short',
+    thumbnails: { high: { url: 'https://i.ytimg.com/vi/video1/hqdefault.jpg' } },
     publishedAt: target.publishedAt,
     liveBroadcastContent: 'none',
   },
@@ -100,7 +101,12 @@ describe('direct providers', () => {
       '2026-11-01'
     );
     expect(posts).toHaveLength(1);
-    expect(posts[0]).toMatchObject({ platformPostId: 'video1', contentType: 'shorts_candidate' });
+    expect(posts[0]).toMatchObject({
+      platformPostId: 'video1',
+      contentType: 'shorts_candidate',
+      thumbnailUrl: 'https://i.ytimg.com/vi/video1/hqdefault.jpg',
+    });
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch.mock.calls[1][0]).toContain('playlistItems');
   });
   it('separates public cumulative counters, daily non-advertising evidence and paid traffic, with no fabricated freshness', async () => {
@@ -218,6 +224,7 @@ describe('direct providers', () => {
             {
               id: 'reel',
               media_product_type: 'REELS',
+              thumbnail_url: 'https://scontent.cdninstagram.com/reel.jpg',
               timestamp: target.publishedAt,
               permalink: 'https://www.instagram.com/reel/native/',
             },
@@ -227,6 +234,8 @@ describe('direct providers', () => {
     vi.stubGlobal('fetch', fetch);
     const result = await new MetaProvider(account('instagram')).discoverPosts('remote');
     expect(result).toHaveLength(1);
+    expect(result[0].thumbnailUrl).toBe('https://scontent.cdninstagram.com/reel.jpg');
+    expect(fetch.mock.calls[0][0]).toContain('thumbnail_url');
     expect(fetch.mock.calls[1][0]).toContain('graph.facebook.com/v26.0/remote/media');
     expect(fetch.mock.calls[1][0]).toContain('after=next');
     expect(fetch.mock.calls[0][0]).toContain('appsecret_proof=');
@@ -362,6 +371,7 @@ it('discovers native Instagram Login Reels and reads views on the Instagram host
             timestamp: '2026-11-01T12:00:00+0000',
             permalink: 'https://www.instagram.com/reel/video1/',
             media_product_type: 'REELS',
+            thumbnail_url: 'https://scontent.cdninstagram.com/reel.jpg',
           },
           {
             id: 'photo',
@@ -429,6 +439,7 @@ it('discovers native SUAT Reels and collects uncertain views with proof from the
             timestamp: target.publishedAt,
             permalink: 'https://www.instagram.com/reel/test/',
             media_product_type: 'REELS',
+            thumbnail_url: 'https://scontent.cdninstagram.com/reel.jpg',
           },
         ],
       })
@@ -437,7 +448,10 @@ it('discovers native SUAT Reels and collects uncertain views with proof from the
   vi.stubGlobal('fetch', fetch);
   const provider = new MetaProvider(a);
   expect(await provider.discoverPosts('222', '2026-11-01T00:00:00Z')).toEqual([
-    expect.objectContaining({ platformPostId: '777' }),
+    expect.objectContaining({
+      platformPostId: '777',
+      thumbnailUrl: 'https://scontent.cdninstagram.com/reel.jpg',
+    }),
   ]);
   expect(
     await provider.fetchMetrics('222', undefined, [{ ...target, platformPostId: '777' }])
@@ -485,5 +499,31 @@ it('erases revoked SUAT credentials safely instead of applying Instagram refresh
     )
   ).rejects.toThrow('Reconnect');
   expect(token.revoke).toHaveBeenCalledOnce();
+  expect(fetch).toHaveBeenCalledOnce();
+});
+
+it('allows only the exact connected Instagram profile fields without opening arbitrary Graph endpoints', async () => {
+  const a = unifiedAccount();
+  const access = new DirectAccess(a, Date.now() + 5000);
+  const fetch = vi.fn().mockResolvedValue(
+    json({
+      id: '222',
+      username: 'creator',
+      profile_picture_url: 'https://cdninstagram.com/avatar',
+    })
+  );
+  vi.stubGlobal('fetch', fetch);
+  await access.request(
+    'https://graph.facebook.com/v27.0/222?fields=id,username,name,profile_picture_url'
+  );
+  expect(fetch).toHaveBeenCalledOnce();
+  await expect(
+    access.request(
+      'https://graph.facebook.com/v27.0/999?fields=id,username,name,profile_picture_url'
+    )
+  ).rejects.toThrow(/not permitted/);
+  await expect(
+    access.request('https://graph.facebook.com/v27.0/222?fields=id,messages')
+  ).rejects.toThrow(/not permitted/);
   expect(fetch).toHaveBeenCalledOnce();
 });

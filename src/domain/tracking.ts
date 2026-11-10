@@ -1,3 +1,4 @@
+import { usableThumbnail } from './post-media';
 import type { DashboardData, Post, Snapshot, TrackingState, ReviewEvidence } from './model';
 export const closingGraceHours = 24;
 export const freshnessHours = 2;
@@ -79,6 +80,7 @@ export function trackingState(data: DashboardData, post: Post, now: string): Tra
       ).toISOString()
     : null;
   const issues: string[] = [];
+  if (prior?.isAd === true) issues.push('suspected_paid_promotion');
   if (data.accounts.find((a) => a.id === post.account_id)?.integration?.payoutsBlocked)
     issues.push('provider_policy_blocked');
   if (prior?.contentType === 'shorts_candidate') issues.push('shorts_classification_unverified');
@@ -122,7 +124,10 @@ export function trackingState(data: DashboardData, post: Post, now: string): Tra
     issues.push('evidence_missing');
   if (prior?.lastError) issues.push('refresh_failed');
   return {
+    ...(usableThumbnail(prior?.thumbnail, Date.parse(now)) ? { thumbnail: prior!.thumbnail } : {}),
+    thumbnailCheckedAt: prior?.thumbnailCheckedAt,
     contentType: prior?.contentType,
+    isAd: prior?.isAd,
     status,
     issues,
     firstSeenAt,

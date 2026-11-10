@@ -17,6 +17,14 @@ const videos = z.object({
       snippet: z.object({
         channelId: z.string(),
         title: z.string(),
+        thumbnails: z
+          .object({
+            default: z.object({ url: z.string() }).optional(),
+            medium: z.object({ url: z.string() }).optional(),
+            high: z.object({ url: z.string() }).optional(),
+          })
+          .optional()
+          .catch(undefined),
         publishedAt: instantSchema,
         liveBroadcastContent: z.string().optional(),
       }),
@@ -157,6 +165,10 @@ export class YouTubeProvider implements TrackingProvider {
         platformPostId: v.id,
         url: `https://www.youtube.com/watch?v=${v.id}`,
         caption: v.snippet.title,
+        thumbnailUrl:
+          v.snippet.thumbnails?.high?.url ||
+          v.snippet.thumbnails?.medium?.url ||
+          v.snippet.thumbnails?.default?.url,
         publishedAt: v.snippet.publishedAt,
         contentType: 'shorts_candidate',
       }));
@@ -174,6 +186,10 @@ export class YouTubeProvider implements TrackingProvider {
       if (count !== null)
         metrics.push({
           platformPostId: video.id,
+          thumbnailUrl:
+            video.snippet.thumbnails?.high?.url ||
+            video.snippet.thumbnails?.medium?.url ||
+            video.snippet.thumbnails?.default?.url,
           views: count,
           metric: 'public_views',
           providerUpdatedAt: null,

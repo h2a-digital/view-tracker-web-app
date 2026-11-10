@@ -25,6 +25,7 @@ const media = z.object({
   permalink: z.url().optional(),
   permalink_url: z.url().optional(),
   media_product_type: z.string().optional(),
+  thumbnail_url: z.string().nullish().catch(undefined),
 });
 export class MetaProvider implements TrackingProvider {
   readonly name: string;
@@ -60,7 +61,7 @@ export class MetaProvider implements TrackingProvider {
     for (let page = 0; page < 10; page++) {
       const query = new URLSearchParams({
         fields: instagram
-          ? 'id,caption,timestamp,permalink,media_product_type'
+          ? 'id,caption,timestamp,permalink,media_product_type,thumbnail_url'
           : 'id,description,created_time,permalink_url',
         limit: '100',
         ...(after ? { after } : {}),
@@ -96,6 +97,7 @@ export class MetaProvider implements TrackingProvider {
             url,
             caption: item.caption || item.description || '',
             contentType: 'reel',
+            ...(instagram ? { thumbnailUrl: item.thumbnail_url } : {}),
           });
       }
       // Instagram does not promise ordering; do not stop at the first older row.

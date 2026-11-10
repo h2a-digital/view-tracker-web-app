@@ -5,7 +5,9 @@ import { configurationIssues, hostedPreview } from '@/lib/server/deployment';
 import { adminDatabase } from '@/lib/server/supabase';
 import { loadDashboard } from '@/repositories/dashboard';
 import { synchronizeAccount } from '@/services/tracking/sync';
+import { zernioInstagramEnabled } from '@/services/tracking/zernio';
 import { trackingProvider } from '@/services/tracking/registry';
+import { refreshProfile } from '@/services/profiles/metadata';
 import { maintainProviders } from '@/services/lifecycle/worker';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -71,7 +73,11 @@ export async function POST(request: Request) {
         const { data, revision }: Awaited<ReturnType<typeof loadDashboard>> =
           workspace ?? (await loadDashboard());
         const account = data.accounts.find((a) => a.id === current.account_id);
-        if (!account || account.status !== 'connected') {
+        const instagramPaused =
+          account?.provider === 'zernio' &&
+          account.platform === 'instagram' &&
+          !zernioInstagramEnabled();
+        if (!account || account.status !== 'connected' || instagramPaused) {
           const result = await db.rpc('finish_tracking_job', {
             job_id: current.id,
             success: true,
@@ -84,7 +90,7 @@ export async function POST(request: Request) {
             accountId: current.account_id,
             success: true,
             diagnostics: null,
-            skipped: 'account_not_connected',
+            skipped: instagramPaused ? 'zernio_instagram_disabled' : 'account_not_connected',
           });
           job = null;
           continue;
@@ -123,6 +129,14 @@ export async function POST(request: Request) {
         job = null;
       }
     }
+    let profileMetadata: { status: string; processed: boolean } | undefined;
+    if (Date.now() < providerDeadline - 6500) {
+      try {
+        profileMetadata = await refreshProfile(db, Math.min(providerDeadline, Date.now() + 6000));
+      } catch {
+        profileMetadata = { status: 'unavailable', processed: false };
+      }
+    }
     await record(
       failed ? 'failed' : processed ? 'success' : 'idle',
       failed ? 503 : 200,
@@ -134,6 +148,7 @@ export async function POST(request: Request) {
         success: !failed,
         invocationId: id,
         lifecycle,
+        profileMetadata,
         diagnostics: results.length === 1 ? results[0].diagnostics : null,
         results,
         ...(results[0]?.skipped && results.length === 1 ? { skipped: results[0].skipped } : {}),

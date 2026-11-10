@@ -13,7 +13,9 @@ describe('server-rendered dashboard surfaces', () => {
       'Apps &amp; campaigns',
       'Monthly payouts',
       'Social accounts',
-      'Verified eligible views',
+      'Pending reviews',
+      'Top creators',
+      'Performance by platform',
       'Recent posts',
     ])
       expect(html).toContain(s);
@@ -31,7 +33,7 @@ describe('server-rendered dashboard surfaces', () => {
       <RulesEditor data={d} defaultAppId={d.apps[0].id} onSave={async () => {}} />
     );
     for (const s of [
-      'Creator · this app',
+      'Rule level',
       'Fixed payments',
       'Progressive rates',
       'Monthly cap',
@@ -39,4 +41,45 @@ describe('server-rendered dashboard surfaces', () => {
     ])
       expect(html).toContain(s);
   });
+});
+
+it('exposes accessible disabled loading controls and skeleton status', async () => {
+  const { AsyncButton } = await import('@/components/dashboard/AsyncButton');
+  const { default: Loading } = await import('@/app/loading');
+  const html = renderToStaticMarkup(
+    <AsyncButton busy className="button">
+      Save changes
+    </AsyncButton>
+  );
+  expect(html).toContain('disabled');
+  expect(html).toContain('aria-busy="true"');
+  expect(renderToStaticMarkup(<Loading />)).toContain('role="status"');
+});
+
+it('uses circular platform-specific avatar fallbacks without remote image scraping', async () => {
+  const { AccountAvatar } = await import('@/components/dashboard/Primitives');
+  for (const platform of ['tiktok', 'instagram', 'youtube']) {
+    const html = renderToStaticMarkup(<AccountAvatar name="Creator" platform={platform} />);
+    expect(html).toContain(`platform-avatar ${platform}`);
+    expect(html).not.toContain('<img');
+  }
+});
+
+it('keeps overview previews searchable without reintroducing tables or technical audit logs', async () => {
+  const { Overview } = await import('@/components/dashboard/Overview');
+  const data = demoWorkspace();
+  const html = renderToStaticMarkup(
+    <Overview
+      data={data}
+      appId="all"
+      query="no-matching-publication-xyz"
+      now={Date.now()}
+      onNavigate={() => {}}
+      onOpenPost={() => {}}
+    />
+  );
+  expect(html).toContain('No posts to show');
+  expect(html).not.toContain('<table');
+  expect(html).not.toContain('createCreator');
+  expect(html).not.toContain('updateEntity');
 });

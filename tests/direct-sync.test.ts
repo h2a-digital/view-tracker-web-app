@@ -203,3 +203,27 @@ describe('direct-provider tracking and compensation boundaries', () => {
     ).toThrow('Zernio');
   });
 });
+
+it('persists thumbnails through duplicate discoveries and unchanged metrics without changing window or snapshots', async () => {
+  const d = setup(),
+    p = provider([primary]);
+  const discover = p.discoverPosts;
+  p.discoverPosts = async (...args) =>
+    (await discover(...args)).map((post) => ({
+      ...post,
+      thumbnailUrl: 'https://scontent.cdninstagram.com/cover.jpg',
+    }));
+  const first = await synchronizeAccount(d, d.accounts[0].id, p);
+  const next = await synchronizeAccount(first, d.accounts[0].id, p);
+  expect(next.posts[0].tracking?.thumbnail?.url).toBe(
+    'https://scontent.cdninstagram.com/cover.jpg'
+  );
+  expect(Date.parse(next.posts[0].deadline!) - Date.parse(next.posts[0].published_at)).toBe(
+    168 * 3600000
+  );
+  expect(next.snapshots).toEqual(first.snapshots);
+  expect(next.posts[0].eligible_views).toBe(first.posts[0].eligible_views);
+  expect(next.posts[0].rules).toEqual(first.posts[0].rules);
+  expect(next.posts[0].campaign_id).toBe(first.posts[0].campaign_id);
+  expect(next.statements).toEqual(first.statements);
+});

@@ -1,4 +1,7 @@
 'use client';
+import { Input } from '@/components/ui/controls';
+import { requestJson } from '@/lib/client/request';
+import { AsyncButton } from './AsyncButton';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
@@ -14,7 +17,7 @@ export function Access({ setup = false, notice = '' }: { setup?: boolean; notice
           <span className="brand-icon">
             <Layers size={23} />
           </span>
-          Creator Ledger
+          H2A Creator Hub
         </div>
         <span className="eyebrow">YOUR CREATOR OPERATIONS, CONNECTED</span>
         <h1>{setup ? 'A home for every creator.' : 'Welcome back.'}</h1>
@@ -61,13 +64,12 @@ export function Access({ setup = false, notice = '' }: { setup?: boolean; notice
               setError('');
               const fields = new FormData(e.currentTarget);
               try {
-                const r = await fetch('/api/auth', {
+                await requestJson('/api/auth', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify(Object.fromEntries(fields)),
                 });
-                const v = await r.json();
-                if (!r.ok) throw new Error(v.error);
+
                 router.push('/');
                 router.refresh();
               } catch (e) {
@@ -79,11 +81,11 @@ export function Access({ setup = false, notice = '' }: { setup?: boolean; notice
           >
             <label className="field">
               Administrator email
-              <input type="email" name="email" autoComplete="username" required />
+              <Input type="email" name="email" autoComplete="username" required />
             </label>
             <label className="field">
               Password
-              <input
+              <Input
                 type="password"
                 name="password"
                 autoComplete="current-password"
@@ -96,10 +98,10 @@ export function Access({ setup = false, notice = '' }: { setup?: boolean; notice
                 {error}
               </p>
             )}
-            <button className="button primary" disabled={busy}>
-              {busy ? 'Signing in…' : 'Sign in'}
+            <AsyncButton className="button primary" disabled={busy} busy={busy}>
+              Sign in
               <ArrowRight size={16} />
-            </button>
+            </AsyncButton>
           </form>
         )}
       </div>

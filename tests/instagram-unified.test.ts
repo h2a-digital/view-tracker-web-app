@@ -130,6 +130,14 @@ function grant(
           ],
         }
       )
+    )
+    .mockResolvedValueOnce(
+      json({
+        id: '222',
+        username: 'creator',
+        name: 'Creator',
+        profile_picture_url: 'https://scontent.cdninstagram.com/avatar',
+      })
     );
   vi.stubGlobal('fetch', fetch);
   return fetch;
@@ -181,6 +189,7 @@ describe('Unified Login creator authorization', () => {
       '/v27.0/debug_token',
       '/v27.0/me',
       '/v27.0/me/assigned_instagram_accounts',
+      '/v27.0/222',
     ]);
     expect(paths.join(',')).not.toMatch(/messages|conversations|accounts\?/);
     const exchange = new URL(String(fetch.mock.calls[0][0]));
@@ -191,7 +200,13 @@ describe('Unified Login creator authorization', () => {
     const saved = mocks.rpc.mock.calls.find(([name]) => name === 'commit_direct_connection')![1];
     expect(saved.document.accounts[0]).toMatchObject({
       provider_account_id: '222',
-      integration: { instagramAuthMode: 'unified_login', tokenExpiresAt: null },
+      integration: {
+        instagramAuthMode: 'unified_login',
+        tokenExpiresAt: null,
+        profileMetadata: expect.objectContaining({
+          avatarUrl: 'https://scontent.cdninstagram.com/avatar',
+        }),
+      },
     });
     expect(unseal(saved.encrypted_token, document.accounts[0].id)).toMatchObject({
       authMode: 'unified_login',

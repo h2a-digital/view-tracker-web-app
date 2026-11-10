@@ -32,6 +32,9 @@ export class DirectAccess {
       const insights = /^[0-9]+\/insights$/.test(path);
       const identity = /^[0-9]+$/.test(path);
       const fields = parsed.searchParams.get('fields');
+      const profile =
+        path === this.account.provider_account_id &&
+        fields === 'id,username,name,profile_picture_url';
       const allowed = insights
         ? ['metric', 'period']
         : identity
@@ -42,8 +45,12 @@ export class DirectAccess {
         !(assigned || media || insights || identity) ||
         [...parsed.searchParams.keys()].some((key) => !allowed.includes(key)) ||
         (assigned && fields !== 'id,username') ||
-        (media && fields !== 'id,caption,timestamp,permalink,media_product_type') ||
-        (identity && fields !== 'id,caption') ||
+        (media &&
+          ![
+            'id,caption,timestamp,permalink,media_product_type',
+            'id,caption,timestamp,permalink,media_product_type,thumbnail_url',
+          ].includes(fields || '')) ||
+        (identity && fields !== 'id,caption' && !profile) ||
         (insights &&
           (parsed.searchParams.get('metric') !== 'views' ||
             parsed.searchParams.get('period') !== 'lifetime'))

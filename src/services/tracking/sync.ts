@@ -1,4 +1,5 @@
 import 'server-only';
+import { cacheThumbnail, usableThumbnail, thumbnailBackfillDue } from '@/domain/post-media';
 import { appendObservation, runCommand } from '@/domain/commands';
 import { publicationMonth, refreshDrafts } from '@/domain/compensation';
 import {
@@ -80,11 +81,19 @@ export async function synchronizeAccount(
           diagnostics.errors.push(`Post ${post.platformPostId}: missing canonical URL.`);
           continue;
         }
-        if (
-          data.posts.some(
-            (p) => p.account_id === accountId && p.platform_post_id === post.platformPostId
-          )
-        ) {
+        const existing = data.posts.find(
+          (p) => p.account_id === accountId && p.platform_post_id === post.platformPostId
+        );
+        if (existing && 'isAd' in post)
+          existing.tracking = {
+            ...trackingState(data, existing, startedAt),
+            isAd: post.isAd ?? null,
+          };
+        if (existing) {
+          if (post.thumbnailUrl) {
+            existing.tracking ??= trackingState(data, existing, startedAt);
+            cacheThumbnail(existing, post.thumbnailUrl, startedAt);
+          }
           skip('already_discovered');
           continue;
         }
@@ -108,11 +117,16 @@ export async function synchronizeAccount(
         const created = data.posts.find(
           (p) => p.account_id === accountId && p.platform_post_id === post.platformPostId
         );
-        if (created && post.contentType)
+        if (created && (post.contentType || 'isAd' in post))
           created.tracking = {
             ...trackingState(data, created, startedAt),
             contentType: post.contentType,
+            ...('isAd' in post ? { isAd: post.isAd ?? null } : {}),
           };
+        if (created && post.thumbnailUrl) {
+          created.tracking ??= trackingState(data, created, startedAt);
+          cacheThumbnail(created, post.thumbnailUrl, startedAt);
+        }
       } catch (error) {
         diagnostics.errors.push(
           `Post ${post.platformPostId}: ${error instanceof Error ? error.message : 'Invalid metadata.'}`
@@ -205,6 +219,15 @@ export async function synchronizeAccount(
         skip('post_not_found');
         continue;
       }
+      if (observation.thumbnailUrl) {
+        post.tracking ??= trackingState(data, post, new Date().toISOString());
+        cacheThumbnail(post, observation.thumbnailUrl, new Date().toISOString());
+      }
+      if ('isAd' in observation)
+        post.tracking = {
+          ...trackingState(data, post, new Date().toISOString()),
+          isAd: observation.isAd ?? null,
+        };
       const supporting =
         observation.metric === 'paid_views' ||
         observation.provenance?.kind === 'daily' ||
@@ -368,6 +391,40 @@ export async function synchronizeAccount(
     }
     if (p.deadline && p.deadline <= now && p.eligibility_status === 'tracking')
       p.eligibility_status = 'review';
+  }
+  // Media-only maintenance comes after metric collection and never alters its lookback or targets.
+  if (provider.fetchThumbnails) {
+    const pending = data.posts
+      .filter((p) => p.account_id === accountId && thumbnailBackfillDue(p, Date.parse(now)))
+      .sort((a, b) => a.published_at.localeCompare(b.published_at))
+      .slice(0, 50);
+    if (pending.length)
+      try {
+        const media = await provider.fetchThumbnails(
+          account.provider_account_id,
+          pending.map((p) => ({
+            platformPostId: p.platform_post_id,
+            publishedAt: p.published_at,
+            deadline: p.deadline,
+          }))
+        );
+        if (media === null) skip('thumbnail_backfill_deferred');
+        else
+          for (const p of pending) {
+            p.tracking ??= trackingState(data, p, now);
+            p.tracking.thumbnailCheckedAt = now;
+            const image = media.find((m) => m.platformPostId === p.platform_post_id);
+            cacheThumbnail(p, image?.thumbnailUrl, now);
+            skip(
+              usableThumbnail(p.tracking.thumbnail, Date.parse(now))
+                ? 'thumbnail_backfilled'
+                : 'thumbnail_unavailable'
+            );
+          }
+      } catch {
+        // Optional presentation failures must never fail a successful metric synchronization.
+        skip('thumbnail_backfill_failed');
+      }
   }
   // Create publication-month drafts automatically; payable totals remain based only on reviewed eligibility.
   const pools = new Map(

@@ -25,7 +25,13 @@ export type Campaign = {
   name: string;
   status: 'active' | 'paused' | 'archived';
 };
-export type Creator = { id: string; name: string; email: string; notes: string };
+export type Creator = {
+  id: string;
+  name: string;
+  email: string;
+  notes: string;
+  archived?: boolean | null;
+};
 export type Membership = {
   id: string;
   creator_id: string;
@@ -33,7 +39,14 @@ export type Membership = {
   starts_at: string;
   ends_at: string | null;
 };
+export type ProfileMetadata = {
+  name?: string;
+  username?: string;
+  avatarUrl?: string | null;
+  refreshedAt: string;
+};
 export type SocialAccount = {
+  archived?: boolean | null;
   id: string;
   creator_id: string;
   platform: Platform;
@@ -41,6 +54,10 @@ export type SocialAccount = {
   ownership: 'company' | 'creator';
   provider: 'manual' | 'zernio' | 'direct';
   integration?: {
+    profileMetadata?: ProfileMetadata;
+    profileMetadataStatus?: { checkedAt: string; status: string };
+    channelIdentityLookup?: { checkedAt: string; status: string };
+    channelIdentity?: { title: string; handle?: string; avatarUrl?: string; refreshedAt: string };
     instagramAuthMode?: 'instagram_login' | 'facebook_login' | 'unified_login';
     sourceErasedAt?: string;
     payoutsBlocked?: boolean;
@@ -236,6 +253,9 @@ export type ReviewEvidence = {
   cutoffConfirmed: boolean;
 };
 export type TrackingState = {
+  thumbnailCheckedAt?: string;
+  thumbnail?: { url: string; capturedAt: string };
+  isAd?: boolean | null;
   contentType?: MetricProvenance['contentType'];
   status: 'active' | 'closing' | 'complete' | 'review';
   issues: string[];

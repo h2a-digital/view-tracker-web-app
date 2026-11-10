@@ -5,8 +5,11 @@ import { ZernioProvider } from './zernio';
 import { YouTubeProvider } from './direct/youtube';
 import { MetaProvider } from './direct/meta';
 export function trackingProvider(account: SocialAccount, deadline: number): TrackingProvider {
-  if (account.provider === 'zernio' && account.platform === 'tiktok')
-    return new ZernioProvider(deadline);
+  if (
+    account.provider === 'zernio' &&
+    (account.platform === 'tiktok' || account.platform === 'instagram')
+  )
+    return new ZernioProvider(deadline, account.platform);
   if (account.provider === 'direct' && account.platform === 'youtube')
     return new YouTubeProvider(account, deadline);
   if (account.provider === 'direct' && ['instagram', 'facebook'].includes(account.platform))

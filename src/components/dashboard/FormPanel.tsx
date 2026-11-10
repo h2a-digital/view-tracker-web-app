@@ -1,4 +1,6 @@
 'use client';
+import { Input, Select, Textarea } from '@/components/ui/controls';
+import { AsyncButton } from './AsyncButton';
 import { useState } from 'react';
 export type Field = {
   name: string;
@@ -27,12 +29,17 @@ export function FormPanel({
       className="panel-form"
       onSubmit={async (e) => {
         e.preventDefault();
+        if (busy) return;
         setError('');
         setBusy(true);
         try {
-          await onSubmit(
-            Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>
-          );
+          const values = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<
+            string,
+            string
+          >;
+          const missing = fields.find((f) => f.required !== false && !values[f.name]?.trim());
+          if (missing) throw new Error(`${missing.label} is required.`);
+          await onSubmit(values);
         } catch (e) {
           setError(e instanceof Error ? e.message : 'Could not save.');
         } finally {
@@ -44,23 +51,25 @@ export function FormPanel({
         <label className="field" key={f.name}>
           <span>{f.label}</span>
           {f.type === 'select' ? (
-            <select name={f.name} defaultValue={f.value} required={f.required !== false}>
+            <Select name={f.name} defaultValue={f.value} required={f.required !== false}>
               {f.options?.map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>
               ))}
-            </select>
+            </Select>
           ) : f.type === 'textarea' ? (
-            <textarea
+            <Textarea
               name={f.name}
               defaultValue={f.value}
               required={f.required !== false}
               rows={4}
+              maxLength={f.name === 'notes' ? 2000 : undefined}
             />
           ) : (
-            <input
+            <Input
               name={f.name}
+              maxLength={f.name === 'name' ? 100 : undefined}
               type={f.type || 'text'}
               defaultValue={f.value}
               required={f.required !== false}
@@ -91,9 +100,9 @@ export function FormPanel({
         </p>
       )}
       <div className="form-footer">
-        <button className="button primary" disabled={busy}>
-          {busy ? 'Saving…' : submitLabel}
-        </button>
+        <AsyncButton className="button primary" disabled={busy} busy={busy}>
+          {submitLabel}
+        </AsyncButton>
       </div>
     </form>
   );

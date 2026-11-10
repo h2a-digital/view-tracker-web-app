@@ -179,3 +179,213 @@ it('does not fetch after the shared worker provider deadline', async () => {
   await expect(provider.listAccounts()).rejects.toThrow('time budget');
   expect(fetch).not.toHaveBeenCalled();
 });
+
+describe('Instagram/Zernio pilot', () => {
+  const reel = (overrides = {}) => ({
+    platform: 'instagram',
+    platformPostId: 'ig-native-1',
+    platformPostUrl: 'https://www.instagram.com/reel/SHORTCODE/',
+    publishedAt: new Date(Date.now() - 86400000).toISOString(),
+    mediaType: 'video',
+    mediaProductType: 'REELS',
+    analytics: { views: 1200, lastUpdated: new Date().toISOString() },
+    ...overrides,
+  });
+  const enable = () => vi.stubEnv('ZERNIO_INSTAGRAM_ENABLED', 'true');
+  it('defaults off without making provider calls, while TikTok still works', async () => {
+    const fetch = mock([{ posts: [] }]);
+    vi.stubEnv('ZERNIO_INSTAGRAM_ENABLED', 'false');
+    const provider = new ZernioProvider(undefined, 'instagram');
+    await expect(provider.discoverPosts(accountId)).rejects.toThrow(/disabled/);
+    await expect(provider.fetchMetrics(accountId)).rejects.toThrow(/disabled/);
+    await expect(
+      provider.connectUrl('profile', 'https://hub.example.com/callback', 'creator')
+    ).rejects.toThrow(/disabled/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await new ZernioProvider().fetchMetrics(accountId)).toEqual([]);
+  });
+  it('uses direct Instagram Login and preserves the reconnect identity', async () => {
+    enable();
+    const fetch = mock([{ authUrl: 'https://www.instagram.com/oauth/authorize' }]);
+    await new ZernioProvider(undefined, 'instagram').connectUrl(
+      'profile',
+      'https://hub.example.com/callback',
+      'creator',
+      'existing'
+    );
+    const url = new URL(fetch.mock.calls[0][0]);
+    expect(url.pathname).toBe('/api/v1/connect/instagram');
+    expect(url.searchParams.get('loginMethod')).toBe('instagram_login');
+    expect(url.searchParams.get('reconnectAccountId')).toBe('existing');
+  });
+  it('discovers confirmed Reels only, including URL evidence when product type is missing', async () => {
+    enable();
+    const rows = [
+      reel(),
+      reel({ platformPostId: 'url-reel', mediaProductType: undefined }),
+      reel({ platformPostId: 'story', mediaProductType: 'STORY' }),
+      reel({ platformPostId: 'photo', mediaType: 'image' }),
+      reel({
+        platformPostId: 'unknown',
+        mediaProductType: undefined,
+        platformPostUrl: 'https://www.instagram.com/p/FEED/',
+      }),
+      reel({
+        platformPostId: 'wrong-host',
+        mediaProductType: undefined,
+        platformPostUrl: 'https://attacker.example/reel/X/',
+      }),
+    ];
+    const fetch = mock([{ posts: rows }, { posts: rows }]);
+    const provider = new ZernioProvider(undefined, 'instagram');
+    const posts = await provider.discoverPosts(accountId);
+    expect(posts.map((p) => p.platformPostId)).toEqual(['ig-native-1', 'url-reel']);
+    expect(posts.every((p) => p.contentType === 'reel')).toBe(true);
+    const metrics = await provider.fetchMetrics(accountId);
+    expect(metrics).toHaveLength(2);
+    expect(metrics[0]).toMatchObject({ metric: 'public_views', organicVerified: false });
+    expect(fetch.mock.calls[1][0]).toContain('platform=instagram');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it.each([true, false, null, undefined])(
+    'records isAd=%s without treating it as organic proof',
+    async (isAd) => {
+      enable();
+      mock([{ posts: [reel({ isAd })] }]);
+      const observations = await new ZernioProvider(undefined, 'instagram').fetchMetrics(accountId);
+      expect(observations[0]).toMatchObject({ isAd: isAd ?? null, organicVerified: false });
+    }
+  );
+  it('ignores nested entries belonging to another account', async () => {
+    enable();
+    mock([
+      {
+        posts: [
+          {
+            ...reel(),
+            platforms: [
+              { platform: 'instagram', accountId: 'someone-else', platformPostId: 'wrong' },
+            ],
+          },
+        ],
+      },
+    ]);
+    expect(await new ZernioProvider(undefined, 'instagram').fetchMetrics(accountId)).toEqual([]);
+  });
+  it('allows disconnection with the pilot disabled', async () => {
+    vi.stubEnv('ZERNIO_INSTAGRAM_ENABLED', 'false');
+    const fetch = mock([{}]);
+    await new ZernioProvider(undefined, 'instagram').disconnect(accountId);
+    expect(fetch.mock.calls[0][1].method).toBe('DELETE');
+  });
+  it.each([true, false, null, undefined])(
+    'retains mappings, 168-hour windows and ad review semantics (%s)',
+    async (isAd) => {
+      enable();
+      let d = seedData();
+      const go = (command: Parameters<typeof runCommand>[1]) => (d = runCommand(d, command));
+      go({ type: 'createCreator', name: 'Instagram pilot' });
+      go({
+        type: 'assignCreator',
+        creatorId: d.creators[0].id,
+        campaignId: d.campaigns[0].id,
+        startsAt: d.ruleVersions[0].effective_at,
+      });
+      go({
+        type: 'registerAccount',
+        creatorId: d.creators[0].id,
+        platform: 'instagram',
+        username: 'creator',
+        ownership: 'creator',
+        provider: 'zernio',
+      });
+      const account = d.accounts[0];
+      account.status = 'connected';
+      account.provider_account_id = accountId;
+      go({
+        type: 'mapAccount',
+        accountId: account.id,
+        membershipId: d.memberships[0].id,
+        startsAt: d.ruleVersions[0].effective_at,
+      });
+      const rows = { posts: [reel({ isAd })] };
+      mock([rows, rows, rows, rows]);
+      d = await synchronizeAccount(d, account.id, new ZernioProvider(undefined, 'instagram'));
+      d = await synchronizeAccount(d, account.id, new ZernioProvider(undefined, 'instagram'));
+      expect(d.posts).toHaveLength(1);
+      expect(d.snapshots).toHaveLength(1);
+      expect(d.posts[0].campaign_id).toBe(d.campaigns[0].id);
+      expect(Date.parse(d.posts[0].deadline!) - Date.parse(d.posts[0].published_at)).toBe(
+        168 * 3600000
+      );
+      expect(d.posts[0].tracking?.isAd).toBe(isAd ?? null);
+      expect(d.posts[0].tracking?.issues.includes('suspected_paid_promotion')).toBe(isAd === true);
+      expect(d.posts[0].eligible_views).toBeNull();
+    }
+  );
+});
+
+it.each([true, false, null, undefined])(
+  'reads the analytics row isAd field for existing TikTok accounts (%s)',
+  async (isAd) => {
+    const row = { ...page().posts[0], isAd };
+    mock([{ posts: [row] }]);
+    expect((await new ZernioProvider().fetchMetrics(accountId))[0]).toMatchObject({
+      isAd: isAd ?? null,
+      organicVerified: false,
+    });
+  }
+);
+
+it.each(['tiktok', 'instagram'] as const)(
+  'reads %s thumbnails from existing discovery/analytics requests without extra calls',
+  async (platform) => {
+    vi.stubEnv('ZERNIO_INSTAGRAM_ENABLED', 'true');
+    const thumbnailUrl =
+      platform === 'tiktok'
+        ? 'https://p16.tiktokcdn.com/cover.jpg'
+        : 'https://scontent.cdninstagram.com/reel.jpg';
+    const row = {
+      platform,
+      platformPostId: native,
+      platformPostUrl:
+        platform === 'instagram'
+          ? `https://www.instagram.com/reel/${native}/`
+          : `https://www.tiktok.com/@creator/video/${native}`,
+      content: 'Native video',
+      publishedAt: new Date(Date.now() - 86400000).toISOString(),
+      mediaType: 'video',
+      mediaProductType: platform === 'instagram' ? 'REELS' : undefined,
+      thumbnailUrl,
+      analytics: { views: 2000, lastUpdated: new Date(Date.now() - 3600000).toISOString() },
+    };
+    const fetch = mock([{ posts: [] }, { posts: [row], pagination: { page: 1, pages: 1 } }]);
+    const provider = new ZernioProvider(Date.now() + 45000, platform);
+    expect((await provider.discoverPosts(accountId))[0]).toMatchObject({ thumbnailUrl });
+    expect((await provider.fetchMetrics(accountId))[0]).toMatchObject({
+      thumbnailUrl,
+      views: 2000,
+      organicVerified: false,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  }
+);
+it('uses documented per-item thumbnail fallback and ignores malformed optional preview fields', async () => {
+  const first = {
+    ...page().posts[0],
+    thumbnailUrl: null,
+    mediaItems: [{ type: 'video', thumbnail: 'https://p16.tiktokcdn.com/cover.jpg' }],
+  };
+  mock([{ posts: [] }, { posts: [first], pagination: { page: 1, pages: 1 } }]);
+  expect((await new ZernioProvider().discoverPosts(accountId))[0].thumbnailUrl).toContain(
+    '/cover.jpg'
+  );
+  mock([
+    { posts: [] },
+    {
+      posts: [{ ...first, thumbnailUrl: 9, mediaItems: 'bad' }],
+      pagination: { page: 1, pages: 1 },
+    },
+  ]);
+  expect((await new ZernioProvider().discoverPosts(accountId))[0].thumbnailUrl).toBeUndefined();
+});
