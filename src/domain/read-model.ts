@@ -3,6 +3,7 @@ import { performanceReport } from './analytics';
 import { postReview } from './post-review';
 import { calculateProvisional, calculateStatement } from './compensation';
 import { groupReviews } from './review-groups';
+import { initialSetupStatus, type InitialSetupStatus } from './initial-setup-rules';
 export function overviewSummary(data: DashboardData, appId: string, query: string, now: number) {
   const report = performanceReport(data, { app: appId });
   const nowIso = new Date(now).toISOString();
@@ -86,6 +87,7 @@ export function overviewSummary(data: DashboardData, appId: string, query: strin
 }
 export type DashboardReadModel = {
   generatedAt: string;
+  initialSetup: Record<string, InitialSetupStatus>;
   overview: Record<string, ReturnType<typeof overviewSummary>>;
   counts: Record<string, { posts: number; eligibleViews: number }>;
   groups: ReturnType<typeof groupReviews>;
@@ -148,6 +150,9 @@ export function browserDashboard(data: DashboardData): DashboardData {
   );
   const readModel: DashboardReadModel = {
     generatedAt: now,
+    initialSetup: Object.fromEntries(
+      data.apps.map((app) => [app.id, initialSetupStatus(data, app.id, now)])
+    ),
     overview,
     counts,
     groups: groupReviews(data, 'all', now),

@@ -7,6 +7,7 @@ import { Plus, Trash2, GitBranch } from 'lucide-react';
 import type { DashboardData, RulePatch, RuleVersion, Rules } from '@/domain/model';
 import { platforms, verselRules } from '@/domain/model';
 import { nextMonthStart, resolveRules } from '@/domain/compensation';
+import { initialSetupStatus } from '@/domain/initial-setup-rules';
 import type { Command } from '@/domain/validation';
 
 export function RulesEditor({
@@ -32,6 +33,17 @@ export function RulesEditor({
         .at(-1)?.patch ?? {}
   );
   const [effective, setEffective] = useState(nextMonthStart());
+  const [activation, setActivation] = useState<'scheduled' | 'initial_setup_now'>('scheduled');
+  const [confirmed, setConfirmed] = useState(false);
+  const setup = data.readModel
+    ? (data.readModel.initialSetup?.[appId] ?? {
+        allowed: false,
+        postCount: 0,
+        draftCount: 0,
+        reason: 'Refresh the workspace to check initial-setup eligibility.',
+      })
+    : initialSetupStatus(data, appId, new Date().toISOString());
+  const activateNow = scope === 'app' && activation === 'initial_setup_now';
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const campaigns = data.campaigns.filter((c) => c.app_id === appId);
@@ -71,7 +83,12 @@ export function RulesEditor({
   }
   const control = (key: keyof Rules, label: string) => (
     <label className="override-switch">
-      <Switch checked={override(key)} onCheckedChange={() => toggle(key)} label={label} />
+      <Switch
+        disabled={activateNow && key !== 'tiers'}
+        checked={override(key)}
+        onCheckedChange={() => toggle(key)}
+        label={label}
+      />
       <span>{label}</span>
       <small>{override(key) ? 'Override' : 'Inherited'}</small>
     </label>
@@ -82,16 +99,21 @@ export function RulesEditor({
       onSubmit={async (e) => {
         e.preventDefault();
         if (busy) return;
+        if (activateNow && (!setup.allowed || !confirmed)) {
+          setError('Confirm initial setup before activating.');
+          return;
+        }
         setError('');
         setBusy(true);
         try {
           await onSave({
             type: 'saveRules',
+            activation: activateNow ? 'initial_setup_now' : 'scheduled',
             scope,
             appId,
             campaignId: scope.includes('campaign') ? campaignId : null,
             creatorId: scope.startsWith('creator') ? creatorId : null,
-            effectiveAt: instant(effective),
+            effectiveAt: activateNow ? new Date().toISOString() : instant(effective),
             patch,
           });
         } catch (e) {
@@ -105,7 +127,8 @@ export function RulesEditor({
         <GitBranch size={18} />
         <p>
           App defaults → campaign → creator/app → creator/campaign. Posts keep their
-          publication-time rules. Monthly changes start next month.
+          publication-time rules. Monthly changes normally start next month; the guarded
+          initial-setup option below is for unearned company/test content only.
         </p>
       </div>
       <label className="field">
@@ -114,6 +137,8 @@ export function RulesEditor({
           value={appId}
           onChange={(e) => {
             setAppId(e.target.value);
+            setActivation('scheduled');
+            setConfirmed(false);
             const c = data.campaigns.find((c) => c.app_id === e.target.value)?.id || '';
             setCampaignId(c);
             load(scope, e.target.value, c, creatorId);
@@ -133,6 +158,8 @@ export function RulesEditor({
           onChange={(e) => {
             const s = e.target.value as RuleVersion['scope'];
             setScope(s);
+            setActivation('scheduled');
+            setConfirmed(false);
             load(s, appId, campaignId, creatorId);
           }}
         >
@@ -182,11 +209,54 @@ export function RulesEditor({
           </Select>
         </label>
       )}
+      {scope === 'app' && (
+        <>
+          <label className="field">
+            <span>Activation</span>
+            <Select
+              value={activation}
+              onChange={(event) => {
+                setActivation(event.target.value as typeof activation);
+                setConfirmed(false);
+              }}
+            >
+              <option value="scheduled">Scheduled rule version</option>
+              <option value="initial_setup_now" disabled={!setup.allowed}>
+                Activate now · initial setup only
+              </option>
+            </Select>
+            <small>{setup.reason}</small>
+          </label>
+          {activateNow && (
+            <div className="info-box">
+              <div>
+                <strong>Initial setup: progressive CPM rates only</strong>
+                <p>
+                  Activates at server receipt time. Aligns {setup.postCount} current-month
+                  company/test posts and {setup.draftCount} zero-value drafts. Fixed payments,
+                  thresholds, windows, observations, past months and rule history stay intact.
+                  Scheduled future versions remain scheduled.
+                </p>
+                <label className="inline-check">
+                  <Input
+                    type="checkbox"
+                    checked={confirmed}
+                    onChange={(event) => setConfirmed(event.target.checked)}
+                  />
+                  No real creator has earned compensation. I approve aligning this month’s unearned
+                  company/test records with these CPM rates.
+                </label>
+              </div>
+            </div>
+          )}
+        </>
+      )}
       <label className="field">
         <span>Effective from</span>
         <Input
           type="text"
-          value={effective}
+          value={activateNow ? 'Immediately · authoritative server time' : effective}
+          disabled={activateNow}
           required
           onChange={(e) => setEffective(e.target.value)}
         />
@@ -198,7 +268,7 @@ export function RulesEditor({
       <section className="rule-section">
         {control('windowDays', 'Tracking window')}
         <Select
-          disabled={!override('windowDays')}
+          disabled={activateNow || !override('windowDays')}
           value={[7, 14, 30].includes(values.windowDays) ? values.windowDays : 'custom'}
           onChange={(e) =>
             set('windowDays', e.target.value === 'custom' ? 10 : Number(e.target.value))
@@ -216,7 +286,7 @@ export function RulesEditor({
             min="0.01"
             max="365"
             step="any"
-            disabled={!override('windowDays')}
+            disabled={activateNow || !override('windowDays')}
             value={values.windowDays}
             onChange={(e) => set('windowDays', Number(e.target.value))}
           />
@@ -232,7 +302,7 @@ export function RulesEditor({
               <label>
                 <Input
                   type="checkbox"
-                  disabled={!override('fixedPayments')}
+                  disabled={activateNow || !override('fixedPayments')}
                   checked={!!payment}
                   onChange={(e) =>
                     set(
@@ -250,7 +320,7 @@ export function RulesEditor({
                   <label className="field">
                     <span>USD / post</span>
                     <Input
-                      disabled={!override('fixedPayments')}
+                      disabled={activateNow || !override('fixedPayments')}
                       type="number"
                       min="0"
                       step="0.01"
@@ -268,7 +338,7 @@ export function RulesEditor({
                   <label className="field">
                     <span>Minimum views</span>
                     <Input
-                      disabled={!override('fixedPayments')}
+                      disabled={activateNow || !override('fixedPayments')}
                       type="number"
                       min="0"
                       step="1"
@@ -294,7 +364,7 @@ export function RulesEditor({
       <section className="rule-section">
         {control('cpmMode', 'CPM bonus model')}
         <Select
-          disabled={!override('cpmMode')}
+          disabled={activateNow || !override('cpmMode')}
           value={values.cpmMode}
           onChange={(e) => set('cpmMode', e.target.value as Rules['cpmMode'])}
         >
@@ -310,7 +380,7 @@ export function RulesEditor({
               type="number"
               min="0"
               step="0.01"
-              disabled={!override('flatCpm')}
+              disabled={activateNow || !override('flatCpm')}
               value={values.flatCpm}
               onChange={(e) => set('flatCpm', e.target.value)}
             />
@@ -327,7 +397,7 @@ export function RulesEditor({
               <div className="tier-row" key={i}>
                 <Input
                   aria-label={`Tier ${i + 1} upper threshold`}
-                  disabled={!override('tiers') || t.upTo === null}
+                  disabled={activateNow || !override('tiers') || t.upTo === null}
                   type={t.upTo === null ? 'text' : 'number'}
                   min="1"
                   value={t.upTo ?? 'Unlimited'}
@@ -359,7 +429,7 @@ export function RulesEditor({
                     type="button"
                     className="icon-button"
                     aria-label="Remove tier"
-                    disabled={!override('tiers')}
+                    disabled={activateNow || !override('tiers')}
                     onClick={() =>
                       set(
                         'tiers',
@@ -375,7 +445,7 @@ export function RulesEditor({
             <AsyncButton
               type="button"
               className="button subtle"
-              disabled={!override('tiers')}
+              disabled={activateNow || !override('tiers')}
               onClick={() => {
                 const tiers = [...values.tiers];
                 tiers.splice(tiers.length - 1, 0, {
@@ -397,7 +467,7 @@ export function RulesEditor({
             <label key={p}>
               <Input
                 type="checkbox"
-                disabled={!override('bonusPlatforms')}
+                disabled={activateNow || !override('bonusPlatforms')}
                 checked={values.bonusPlatforms.includes(p)}
                 onChange={(e) =>
                   set(
@@ -421,7 +491,7 @@ export function RulesEditor({
             type="number"
             min="0"
             step="0.01"
-            disabled={!override('monthlyCap')}
+            disabled={activateNow || !override('monthlyCap')}
             value={values.monthlyCap ?? ''}
             placeholder="No cap"
             onChange={(e) => set('monthlyCap', e.target.value || null)}
@@ -431,7 +501,7 @@ export function RulesEditor({
       <section className="rule-section">
         {control('bonusApproval', 'Bonus approval policy')}
         <Select
-          disabled={!override('bonusApproval')}
+          disabled={activateNow || !override('bonusApproval')}
           value={String(values.bonusApproval)}
           onChange={(e) => set('bonusApproval', e.target.value === 'true')}
         >
@@ -444,8 +514,12 @@ export function RulesEditor({
           {error}
         </p>
       )}
-      <AsyncButton className="button primary" disabled={busy} busy={busy}>
-        Save new rule version
+      <AsyncButton
+        className="button primary"
+        disabled={busy || (activateNow && (!confirmed || !setup.allowed))}
+        busy={busy}
+      >
+        {activateNow ? 'Activate initial CPM rates now' : 'Save new rule version'}
       </AsyncButton>
     </form>
   );

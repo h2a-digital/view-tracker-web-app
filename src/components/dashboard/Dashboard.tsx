@@ -62,12 +62,7 @@ import Papa from 'papaparse';
 import type { DashboardData, Post, Statement, Snapshot, SocialAccount } from '@/domain/model';
 import { platforms } from '@/domain/model';
 import { runCommand } from '@/domain/commands';
-import {
-  calculateStatement,
-  fixedCents,
-  publicationMonth,
-  resolveRules,
-} from '@/domain/compensation';
+import { calculateStatement, fixedCents, publicationMonth } from '@/domain/compensation';
 import type { Command } from '@/domain/validation';
 import {
   Drawer,
@@ -82,6 +77,7 @@ import {
 } from './Primitives';
 import { FormPanel, type Field } from './FormPanel';
 import { RulesEditor } from './RulesEditor';
+import { CurrentAppRules } from './CurrentAppRules';
 const nav = [
   ['Overview', LayoutDashboard],
   ['Analytics', GitBranch],
@@ -1053,67 +1049,29 @@ export function Dashboard({
           <GitBranch size={19} />
           <p>
             App defaults → campaign overrides → creator/app → creator/campaign. Fixed payments and
-            windows lock at publication. CPM, cap, and approval changes start next month, with one
-            shared schedule per app and creator.
+            windows lock at publication. CPM, cap, and approval changes normally start next month,
+            with one shared schedule per app and creator. Guarded initial setup permits only
+            progressive-rate corrections before earnings.
           </p>
         </div>
         <div className="app-grid">
           {data.apps
             .filter((a) => appId === 'all' || a.id === appId)
-            .map((a) => {
-              const r = resolveRules(
-                data.ruleVersions,
-                a.id,
-                '',
-                '',
-                new Date().toISOString()
-              ).rules;
-              return (
-                <section className="card rule-card" key={a.id}>
-                  <div className="section-heading">
-                    <h2>{a.name} defaults</h2>
-                    <Badge tone="purple">{r.windowDays}-day window</Badge>
-                  </div>
-                  <h3>Fixed payments</h3>
-                  {r.fixedPayments.map((p) => (
-                    <p key={p.platform} className="rule-line">
-                      <span className="capitalize">{p.platform}</span>
-                      <b>
-                        ${p.amount} <small>at {number(p.minimumViews)} views</small>
-                      </b>
-                    </p>
-                  ))}
-                  <h3>Performance bonus</h3>
-                  {r.cpmMode === 'progressive' ? (
-                    r.tiers.map((t, i) => (
-                      <p className="rule-line" key={i}>
-                        <span>
-                          {i === 0 ? 'First' : `Above ${number(r.tiers[i - 1].upTo || 0)}`}{' '}
-                          {t.upTo === null ? ' · unlimited' : number(t.upTo)}
-                        </span>
-                        <b>${t.cpm} CPM</b>
-                      </p>
-                    ))
-                  ) : (
-                    <p>{r.cpmMode === 'flat' ? `$${r.flatCpm} CPM` : 'Disabled'}</p>
-                  )}
-                  <div className="rule-footer">
-                    <span>
-                      Monthly cap <b>{r.monthlyCap ? `$${r.monthlyCap}` : 'Uncapped'}</b>
-                    </span>
-                    <Badge tone="amber">
-                      {r.bonusApproval ? 'Bonus approval required' : 'Bonus automatic'}
-                    </Badge>
-                  </div>
-                </section>
-              );
-            })}
+            .map((a) => (
+              <CurrentAppRules
+                key={a.id}
+                app={a}
+                versions={data.ruleVersions}
+                asOf={data.readModel?.generatedAt ?? new Date().toISOString()}
+              />
+            ))}
         </div>
         <section className="card">
           <details className="history-panel">
             <summary>Rule version history</summary>
             <p className="history-note">
-              Every version is retained. Published posts keep their original rules.
+              Every version is retained. Published posts keep their original rules except for an
+              explicitly approved, unearned initial-setup CPM alignment.
             </p>
             <div className="table-scroll">
               <table>

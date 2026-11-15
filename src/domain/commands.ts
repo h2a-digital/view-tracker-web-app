@@ -10,6 +10,7 @@ import {
   resolveRules,
 } from './compensation';
 import { postReview } from './post-review';
+import { initialSetupStatus } from './initial-setup-rules';
 import { validateEvidence } from './tracking';
 import { accountingTimezone } from './time';
 import { commandSchema, type Command } from './validation';
@@ -419,6 +420,31 @@ export function runCommand(
       else if (command.creatorId) throw new Error('This scope cannot specify a creator.');
       if (command.scope.includes('campaign') && 'monthlyCap' in command.patch)
         throw new Error('Monthly caps can only be set for an app or creator/app.');
+      const initialActivation = command.activation === 'initial_setup_now';
+      let initialPatch = command.patch;
+      if (initialActivation) {
+        if (command.scope !== 'app')
+          throw new Error('Initial activation is restricted to app defaults.');
+        const eligibility = initialSetupStatus(data, command.appId, now);
+        if (!eligibility.allowed) throw new Error(eligibility.reason);
+        const active = resolveRules(data.ruleVersions, command.appId, '', '', now).rules;
+        const proposed = { ...active, ...command.patch };
+        if (
+          active.cpmMode !== 'progressive' ||
+          proposed.cpmMode !== 'progressive' ||
+          JSON.stringify(active.tiers.map((tier) => tier.upTo)) !==
+            JSON.stringify(proposed.tiers.map((tier) => tier.upTo)) ||
+          JSON.stringify({ ...active, tiers: [] }) !== JSON.stringify({ ...proposed, tiers: [] })
+        )
+          throw new Error(
+            'Initial activation may change progressive CPM rates only. Keep thresholds, fixed payments, window, cap, platforms and approvals unchanged.'
+          );
+        if (JSON.stringify(active.tiers) === JSON.stringify(proposed.tiers))
+          throw new Error('Change a CPM rate before activating.');
+        // Authoritative server time avoids browser clock drift and forbids backdating.
+        command.effectiveAt = now;
+        initialPatch = proposed;
+      }
       if (command.effectiveAt < now) throw new Error('Rule versions cannot be backdated.');
       const prior = data.ruleVersions
         .filter(
@@ -426,7 +452,8 @@ export function runCommand(
             v.scope === command.scope &&
             v.app_id === command.appId &&
             v.campaign_id === command.campaignId &&
-            v.creator_id === command.creatorId
+            v.creator_id === command.creatorId &&
+            v.effective_at <= now
         )
         .sort(
           (a, b) =>
@@ -436,11 +463,12 @@ export function runCommand(
       const changesMonthly = monthlyKeys.some(
         (k) => JSON.stringify(prior?.patch[k]) !== JSON.stringify(command.patch[k])
       );
-      if (changesMonthly && command.effectiveAt < nextMonthStart(clock))
+      if (!initialActivation && changesMonthly && command.effectiveAt < nextMonthStart(clock))
         throw new Error(
           'CPM, cap, platform, and approval changes take effect next month. Keep the current monthly settings for an immediate post-rule change.'
         );
       if (
+        !initialActivation &&
         changesMonthly &&
         command.effectiveAt !==
           nextMonthStart(new Date(new Date(command.effectiveAt).getTime() - 1))
@@ -456,9 +484,25 @@ export function runCommand(
         campaign_id: command.campaignId,
         creator_id: command.creatorId,
         effective_at: command.effectiveAt,
-        patch: command.patch,
+        patch: initialPatch,
         created_at: now,
       });
+      if (initialActivation) {
+        const month = publicationMonth(now);
+        for (const post of data.posts.filter(
+          (post) =>
+            post.app_id === command.appId &&
+            publicationMonth(post.published_at) === month &&
+            post.rules
+        )) {
+          post.rules = { ...post.rules!, tiers: structuredClone(initialPatch.tiers!) };
+          post.rule_version_ids = [...post.rule_version_ids, id];
+        }
+        for (const statement of data.statements.filter(
+          (statement) => statement.app_id === command.appId && statement.month === month
+        ))
+          statement.policy = { ...statement.policy, tiers: structuredClone(initialPatch.tiers!) };
+      }
       entityId = id;
       break;
     }
@@ -905,11 +949,13 @@ export function runCommand(
       command.type === 'excludeHistoricalPosts' ||
       command.type === 'excludeUnattributedPosts'
         ? command.note
-        : command.type === 'approveBonus'
-          ? command.note
-          : command.type === 'mapAccount' && command.confirmCompanyCompensation
-            ? `${actor} explicitly approved creator compensation routing for a company-owned account`
-            : `${actor} · ${command.type}`,
+        : command.type === 'saveRules' && command.activation === 'initial_setup_now'
+          ? `${actor} explicitly activated initial-setup CPM rates at ${now}; aligned only unearned current-month company/test posts and zero-value drafts. Historical versions and prior months retained.`
+          : command.type === 'approveBonus'
+            ? command.note
+            : command.type === 'mapAccount' && command.confirmCompanyCompensation
+              ? `${actor} explicitly approved creator compensation routing for a company-owned account`
+              : `${actor} · ${command.type}`,
     created_at: now,
   });
   return data;

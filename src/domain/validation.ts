@@ -138,6 +138,7 @@ export const commandSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('saveRules'),
+    activation: z.enum(['scheduled', 'initial_setup_now']).default('scheduled'),
     scope: z.enum(['app', 'campaign', 'creator_app', 'creator_campaign']),
     appId: id,
     campaignId: id.nullable(),
