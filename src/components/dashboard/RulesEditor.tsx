@@ -8,6 +8,7 @@ import type { DashboardData, RulePatch, RuleVersion, Rules } from '@/domain/mode
 import { platforms, verselRules } from '@/domain/model';
 import { nextMonthStart, resolveRules } from '@/domain/compensation';
 import { initialSetupStatus } from '@/domain/initial-setup-rules';
+import { activeEditorPatch } from '@/domain/rule-editor';
 import type { Command } from '@/domain/validation';
 
 export function RulesEditor({
@@ -25,12 +26,9 @@ export function RulesEditor({
     data.campaigns.find((c) => c.app_id === defaultAppId)?.id || ''
   );
   const [creatorId, setCreatorId] = useState(data.creators[0]?.id || '');
-  const [patch, setPatch] = useState<RulePatch>(
-    () =>
-      data.ruleVersions
-        .filter((v) => v.scope === 'app' && v.app_id === defaultAppId)
-        .sort((a, b) => a.effective_at.localeCompare(b.effective_at))
-        .at(-1)?.patch ?? {}
+  const asOf = data.readModel?.generatedAt ?? new Date().toISOString();
+  const [patch, setPatch] = useState<RulePatch>(() =>
+    activeEditorPatch(data, 'app', defaultAppId, '', '', asOf)
   );
   const [effective, setEffective] = useState(nextMonthStart());
   const [activation, setActivation] = useState<'scheduled' | 'initial_setup_now'>('scheduled');
@@ -57,17 +55,7 @@ export function RulesEditor({
   ).rules;
   const values: Rules = { ...verselRules, ...inherited, ...patch };
   const load = (s: RuleVersion['scope'], a: string, c: string, u: string) => {
-    const v = data.ruleVersions
-      .filter(
-        (v) =>
-          v.scope === s &&
-          v.app_id === a &&
-          v.campaign_id === (s.includes('campaign') ? c : null) &&
-          v.creator_id === (s.startsWith('creator') ? u : null)
-      )
-      .sort((a, b) => a.effective_at.localeCompare(b.effective_at))
-      .at(-1);
-    setPatch(v?.patch ?? {});
+    setPatch(activeEditorPatch(data, s, a, c, u, asOf));
   };
   const override = (key: keyof Rules) => Object.hasOwn(patch, key);
   const set = <K extends keyof Rules>(key: K, value: Rules[K]) =>
@@ -84,7 +72,7 @@ export function RulesEditor({
   const control = (key: keyof Rules, label: string) => (
     <label className="override-switch">
       <Switch
-        disabled={activateNow && key !== 'tiers'}
+        disabled={activateNow}
         checked={override(key)}
         onCheckedChange={() => toggle(key)}
         label={label}
@@ -114,7 +102,7 @@ export function RulesEditor({
             campaignId: scope.includes('campaign') ? campaignId : null,
             creatorId: scope.startsWith('creator') ? creatorId : null,
             effectiveAt: activateNow ? new Date().toISOString() : instant(effective),
-            patch,
+            patch: activateNow ? { tiers: patch.tiers ?? values.tiers } : patch,
           });
         } catch (e) {
           setError(e instanceof Error ? e.message : 'Could not save rules.');
@@ -216,8 +204,10 @@ export function RulesEditor({
             <Select
               value={activation}
               onChange={(event) => {
-                setActivation(event.target.value as typeof activation);
+                const next = event.target.value as typeof activation;
+                setActivation(next);
                 setConfirmed(false);
+                if (next === 'initial_setup_now') load('app', appId, '', '');
               }}
             >
               <option value="scheduled">Scheduled rule version</option>
@@ -232,10 +222,12 @@ export function RulesEditor({
               <div>
                 <strong>Initial setup: progressive CPM rates only</strong>
                 <p>
-                  Activates at server receipt time. Aligns {setup.postCount} current-month
-                  company/test posts and {setup.draftCount} zero-value drafts. Fixed payments,
-                  thresholds, windows, observations, past months and rule history stay intact.
-                  Scheduled future versions remain scheduled.
+                  Uses the currently active settings, not a future scheduled version. Selecting this
+                  mode reloads the active rates; edit the CPM rates after selecting it. Activates at
+                  server receipt time. Aligns {setup.postCount} current-month company/test posts and{' '}
+                  {setup.draftCount} zero-value drafts. Fixed payments, thresholds, windows,
+                  observations, past months and rule history stay intact. Scheduled future versions
+                  remain scheduled.
                 </p>
                 <label className="inline-check">
                   <Input

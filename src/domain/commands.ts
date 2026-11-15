@@ -11,6 +11,7 @@ import {
 } from './compensation';
 import { postReview } from './post-review';
 import { initialSetupStatus } from './initial-setup-rules';
+import { initialRatePatch } from './initial-rate-patch';
 import { validateEvidence } from './tracking';
 import { accountingTimezone } from './time';
 import { commandSchema, type Command } from './validation';
@@ -428,22 +429,9 @@ export function runCommand(
         const eligibility = initialSetupStatus(data, command.appId, now);
         if (!eligibility.allowed) throw new Error(eligibility.reason);
         const active = resolveRules(data.ruleVersions, command.appId, '', '', now).rules;
-        const proposed = { ...active, ...command.patch };
-        if (
-          active.cpmMode !== 'progressive' ||
-          proposed.cpmMode !== 'progressive' ||
-          JSON.stringify(active.tiers.map((tier) => tier.upTo)) !==
-            JSON.stringify(proposed.tiers.map((tier) => tier.upTo)) ||
-          JSON.stringify({ ...active, tiers: [] }) !== JSON.stringify({ ...proposed, tiers: [] })
-        )
-          throw new Error(
-            'Initial activation may change progressive CPM rates only. Keep thresholds, fixed payments, window, cap, platforms and approvals unchanged.'
-          );
-        if (JSON.stringify(active.tiers) === JSON.stringify(proposed.tiers))
-          throw new Error('Change a CPM rate before activating.');
+        initialPatch = initialRatePatch(active, command.patch);
         // Authoritative server time avoids browser clock drift and forbids backdating.
         command.effectiveAt = now;
-        initialPatch = proposed;
       }
       if (command.effectiveAt < now) throw new Error('Rule versions cannot be backdated.');
       const prior = data.ruleVersions

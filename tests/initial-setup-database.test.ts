@@ -3,6 +3,9 @@ import type { PGlite } from '@electric-sql/pglite';
 import { createTestDatabase } from './helpers/database';
 import { initialSetupFixture, initialCommand } from './helpers/initial-setup';
 import { runCommand } from '@/domain/commands';
+import type { DashboardData } from '@/domain/model';
+import { resolveRules } from '@/domain/compensation';
+import { commandSchema } from '@/domain/validation';
 let db: PGlite;
 beforeAll(async () => {
   db = await createTestDatabase(true, 5);
@@ -23,12 +26,34 @@ it('persists the guarded setup activation under existing schema v5 without rewri
   ]);
   const originalVersions = (await db.query('select * from public.rule_versions order by id')).rows;
   const originalSnapshots = (await db.query('select * from public.snapshots order by id')).rows;
-  const next = runCommand(
-    before,
-    initialCommand(before),
-    'Setup administrator',
-    new Date('2026-11-13T21:00:00Z')
+  // Reproduce production: read JSONB back before the request schema reconstructs nested objects.
+  const raw = (
+    await db.query<{ workspace: { data: DashboardData } }>(
+      'select public.read_dashboard() workspace'
+    )
+  ).rows[0].workspace.data;
+  const loaded: DashboardData = JSON.parse(JSON.stringify(raw), (key, value) =>
+    (key.endsWith('_at') || key === 'deadline') && typeof value === 'string'
+      ? new Date(value).toISOString()
+      : value
   );
+  const command = commandSchema.parse(JSON.parse(JSON.stringify(initialCommand(loaded))));
+  if (command.type !== 'saveRules') throw new Error('Expected rule command');
+  const active = resolveRules(
+    loaded.ruleVersions,
+    loaded.apps[0].id,
+    '',
+    '',
+    '2026-11-13T21:00:00.000Z'
+  ).rules;
+  expect(active.fixedPayments).toEqual(command.patch.fixedPayments);
+  expect(Object.keys(active.fixedPayments[0])).not.toEqual(
+    Object.keys(command.patch.fixedPayments![0])
+  );
+  expect(JSON.stringify({ ...active, tiers: [] })).not.toBe(
+    JSON.stringify({ ...active, ...command.patch, tiers: [] })
+  );
+  const next = runCommand(loaded, command, 'Setup administrator', new Date('2026-11-13T21:00:00Z'));
   await db.query('select public.commit_dashboard($1,$2::jsonb)', [
     revision + 1,
     JSON.stringify(next),

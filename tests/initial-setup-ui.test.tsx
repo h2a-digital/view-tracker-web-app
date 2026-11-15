@@ -38,3 +38,18 @@ it('keeps scheduled activation as the default and explains the server-side setup
   expect(html).toContain('Save new rule version');
   expect(html).not.toContain('Activate initial CPM rates now');
 });
+
+it('initializes the form with active values even when the December version changes nested settings', () => {
+  const data = initialSetupFixture();
+  data.ruleVersions.at(-1)!.patch.fixedPayments = [
+    { platform: 'tiktok', amount: '20', minimumViews: 2000 },
+  ];
+  data.ruleVersions.at(-1)!.patch.monthlyCap = '4000';
+  const html = renderToStaticMarkup(
+    <RulesEditor data={data} defaultAppId={data.apps[0].id} onSave={async () => {}} />
+  );
+  expect(html).toMatch(/aria-label="Tier 1 rate"[^>]*value="1.50"/);
+  expect(html).toMatch(/aria-label="Monthly cap in USD"[^>]*value="3000"/);
+  expect(html).not.toContain('value="20"');
+  expect(html).not.toContain('value="4000"');
+});
